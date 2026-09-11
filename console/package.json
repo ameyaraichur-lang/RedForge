@@ -1,0 +1,32 @@
+{
+  "name": "redforge-console",
+  "version": "0.8.0-m8-ritual",
+  "private": true,
+  "description": "RedForge Console — Ops Mode UI foundation (M6a)",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
+    "@react-three/postprocessing": "^3.1.1",
+    "@types/three": "^0.185.4",
+    "clsx": "^2.1.1",
+    "next": "^15.5.0",
+    "postprocessing": "^6.39.5",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2"
+  }
+}
