@@ -10,9 +10,9 @@
 
 export type Rgb = { r: number; g: number; b: number };
 
-/** uCool / uRimCol as supplied by the world theme. */
-const COOL: Rgb = { r: 34, g: 200, b: 255 };
-const RIM: Rgb = { r: 236, g: 252, b: 255 };
+/** uCool / uRimCol as supplied by the world theme (#00c6ff / #5ceeff). */
+const COOL: Rgb = { r: 0, g: 198, b: 255 };
+const RIM: Rgb = { r: 92, g: 238, b: 255 };
 
 /** Amber endpoints, matching SHELL_FRAG (idle, non-speaking). */
 const DARK_AMBER: Rgb = { r: 210, g: 92, b: 16 };
@@ -61,8 +61,8 @@ export function shellColourFromWarm(w: number, rim = 0, speaking = 0): Rgb {
   };
   const warmGain = Math.min(0.82, (speaking ? 0.7 : 0.76) + tHot * (0.06 - speaking * 0.02));
 
-  const coolCol = lerpRgb(COOL, RIM, rim * 0.45);
-  const coolGain = 0.62 + rim * 0.34;
+  const coolCol = lerpRgb(COOL, RIM, rim * 0.28);
+  const coolGain = 0.66 + rim * 0.22;
 
   return lerpRgb(scale(coolCol, coolGain), scale(warmCol, warmGain), tAmber);
 }

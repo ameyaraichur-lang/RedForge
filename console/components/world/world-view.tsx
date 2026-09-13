@@ -615,9 +615,14 @@ export function WorldView() {
           {postFx && (
             <EffectComposer multisampling={quality === 'high' ? 2 : 0}>
               <Bloom
-                intensity={0.55}
-                luminanceThreshold={0.35}
-                luminanceSmoothing={0.74}
+                // Raised threshold with strong intensity: the halo should come
+                // from the bright ring cores only. Blooming the dim mid-tones
+                // as well is what previously lifted red across the whole figure
+                // and desaturated it. The source colours carry no red, so this
+                // halo stays cyan instead of washing to white.
+                intensity={0.78}
+                luminanceThreshold={0.5}
+                luminanceSmoothing={0.7}
                 mipmapBlur
               />
               <Vignette eskil={false} offset={0.28} darkness={0.55} />

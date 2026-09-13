@@ -56,7 +56,12 @@ type Pt = {
   delay: number;
 };
 
-const RIM_FADE_HEIGHT = 0.25;
+/**
+ * Height over which the bust dissolves into dust above the chest cut. The
+ * reference peaks at the shoulder line and fades below it, so this spans most
+ * of the chest rather than just hiding the mesh's bottom edge.
+ */
+const RIM_FADE_HEIGHT = 0.78;
 
 /**
  * Horizontal contour rings sliced offline from a real head/bust scan
@@ -511,8 +516,8 @@ void main() {
   // the surrounding rings rather than sit under them.
   float warmGain = min(0.82, mix(0.76, 0.7, speaking) + tHot * (0.06 - speaking * 0.02));
 
-  vec3 coolCol = mix(uCool, uRimCol, vRim * 0.45);
-  float coolGain = 0.62 + vRim * 0.34;
+  vec3 coolCol = mix(uCool, uRimCol, vRim * 0.28);
+  float coolGain = 0.66 + vRim * 0.22;
 
   // Cross-fade rather than branch: a hard switch draws a visible seam around
   // the face oval, which the reference does not have.
@@ -630,9 +635,14 @@ const WARM = '#ff8c1f';
 const HOT = '#ffe7a3';
 
 function shellColors(theme: WorldTheme): { cool: string; rim: string; drift: string } {
+  // Red is kept near zero in both the body and rim colours. These points blend
+  // additively, so wherever rings overlap the channels accumulate and clip:
+  // any red in the source climbs toward white and desaturates the figure. The
+  // reference holds green roughly 100-140 above red even in its densest areas,
+  // which is only reachable if red is not there to accumulate.
   return theme.name === 'violet'
-    ? { cool: '#4a7aff', rim: '#d8e8ff', drift: '#8cb0ff' }
-    : { cool: '#22c8ff', rim: '#ecfcff', drift: '#72e8ff' };
+    ? { cool: '#3a6cff', rim: '#7ea8ff', drift: '#8cb0ff' }
+    : { cool: '#00c6ff', rim: '#5ceeff', drift: '#72e8ff' };
 }
 
 export function OrchestratorHead({
