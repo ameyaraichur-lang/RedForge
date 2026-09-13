@@ -113,7 +113,10 @@ def g_m3_stdio_roundtrip():
     from fastmcp.client import Client, StdioTransport
 
     async def _run():
-        t = StdioTransport("python", ["-m", "redforge.mcp_servers.target_adapter"])
+        # sys.executable, not a bare "python": the interpreter running the
+        # gates is the one with redforge installed, and plenty of systems ship
+        # python3 without a "python" alias at all.
+        t = StdioTransport(sys.executable, ["-m", "redforge.mcp_servers.target_adapter"])
         async with Client(t) as c:
             tools = await c.list_tools()
             assert any(tt.name == "demo_chat" for tt in tools)
