@@ -6,7 +6,7 @@
 // Replay resets the bus and re-ingests a prefix of the event list.
 // ---------------------------------------------------------------------------
 
-import { PULSE_CHANNELS, WORLD_EDGES } from '@/lib/world-theme';
+import { MANIFEST_EDGE_COUNT, PULSE_CHANNELS } from '@/lib/world-theme';
 import type { LiveEvent } from '@/lib/live';
 
 export type WorldPulse = { edge: number; t: number; speed: number; color: string };
@@ -68,7 +68,7 @@ class WorldBus {
   }
 
   spawnPulse(edge: number, color: string, speed = 0.55): void {
-    if (edge < 0 || edge >= WORLD_EDGES.length) return;
+    if (edge < 0 || edge >= MANIFEST_EDGE_COUNT) return;
     if (this.pulses.length > 48) this.pulses.shift();
     this.pulses.push({ edge, t: 0, speed, color });
   }
@@ -147,11 +147,13 @@ class WorldBus {
         if (ok) this.spawnBlip(String(e.tech_id ?? ''), true, c.verdicts);
         break;
       }
-      case 'gate_approved':
+      case 'gate_approved': {
         c.gatesApproved += 1;
-        this.spawnImpact('G1_gatekeeper', '#3bff9e', 1.4);
-        this.spawnPulse(8, '#3bff9e', 0.5);
+        const isG2 = e.gate_level === 'G2';
+        this.spawnImpact(isG2 ? 'G2_release' : 'G1_gatekeeper', '#3bff9e', isG2 ? 1.6 : 1.4);
+        for (const ch of (isG2 ? PULSE_CHANNELS.gate : [8])) this.spawnPulse(ch, isG2 ? '#8fd4ff' : '#3bff9e', isG2 ? 0.65 : 0.5);
         break;
+      }
       case 'gate_denied':
         c.gatesDenied += 1;
         this.spawnImpact('G1_gatekeeper', '#ff4d6d', 1.2);

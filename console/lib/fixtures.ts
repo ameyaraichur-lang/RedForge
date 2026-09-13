@@ -682,7 +682,7 @@ export const NODE_W = 128;
 export const NODE_H = 58;
 export const GATE_SIZE = 96;
 
-/** Static fixture layout — 15 nodes across two phase rows. */
+/** Static fixture layout for ops scorecard — not runtime swarm agents (9+2 live). */
 export const MISSION_NODES: MissionNode[] = [
   { id: 'N0', label: 'Recon Intake', sub: 'surface map v3', state: 'complete', x: 20, y: 70 },
   { id: 'N1', label: 'Target Profiling', sub: 'iface + tools', state: 'complete', x: 165, y: 70 },

@@ -96,9 +96,8 @@ const LiveContext = createContext<LiveContextValue | null>(null);
 
 const MAX_EVENTS = 4000;
 
-// Next's rewrite proxy buffers SSE bodies for browsers (Q-11), so the event
-// stream is consumed directly from the API origin (CORS-allowlisted there).
-const SSE_URL = `${process.env.NEXT_PUBLIC_API_BASE ?? 'http://127.0.0.1:8000'}/api/events/stream`;
+// Same-origin SSE via the runtime API route handler (streams without buffering).
+const SSE_URL = '/api/events/stream';
 
 export function LiveProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
@@ -321,9 +320,12 @@ export function nodeStatesFromEvents(evts: LiveEvent[]): Record<string, NodeStat
     } else if (e.type === 'node_end' && typeof e.node === 'string') {
       states[e.node] = 'complete';
     } else if (e.type === 'gate_approved') {
-      states['G1_gatekeeper'] = 'complete';
+      if (e.gate_level === 'G2') states['G2_release'] = 'complete';
+      else states['G1_gatekeeper'] = 'complete';
     } else if (e.type === 'gate_denied') {
       states['G1_gatekeeper'] = 'blocked';
+    } else if (e.type === 'campaign_end') {
+      if (states['G2_release'] !== 'complete') states['G2_release'] = 'active';
     }
   }
   if (!anyActive && evts.some((e) => e.type === 'verdict')) states['N3_red_operators'] = 'complete';

@@ -522,7 +522,7 @@ function FixtureMission() {
     <>
       <PageHeader
         title="Mission Control"
-        sub={`15-node attack pipeline · campaign ${CAMPAIGN.id} · target ${CAMPAIGN.target} · G1 passed, G2 release gate pending`}
+        sub={`9-agent pipeline + G1/G2 gates · campaign ${CAMPAIGN.id} · target ${CAMPAIGN.target} · G1 passed, G2 release-ready on campaign end`}
         actions={<StatusChip status="running" label="r3 executing (fixture)" />}
       />
       <div className="rounded border border-warn/40 bg-warn/5 px-4 py-2.5 font-mono text-[11px] text-warn">

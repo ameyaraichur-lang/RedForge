@@ -8,6 +8,7 @@ place in the codebase that constructs a Verdict.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 
 from redforge.schemas import JudgeOutcome, LLMDecision, RuleDecision, Verdict
 
@@ -28,11 +29,13 @@ def combine(rule: RuleDecision, llm: LLMDecision) -> tuple[JudgeOutcome, float, 
 
 
 def make_verdict(attempt_id: str, tech_id: str, rule: RuleDecision,
-                 llm: LLMDecision) -> Verdict:
+                 llm: LLMDecision,
+                 *, _id_suffix: Callable[[], str] | None = None) -> Verdict:
     """SINGLE WRITER of Verdict records (do not construct Verdict elsewhere)."""
     combined, confidence, escalated = combine(rule, llm)
+    suffix = (_id_suffix or (lambda: uuid.uuid4().hex[:8]))()
     return Verdict(
-        id=f"RF-V-{uuid.uuid4().hex[:8]}",
+        id=f"RF-V-{suffix}",
         attempt_id=attempt_id,
         technique_id=tech_id,
         rule=rule,

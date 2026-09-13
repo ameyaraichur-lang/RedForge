@@ -22,8 +22,8 @@ npm run start
 
 | Route | Screen |
 |---|---|
-| `/` | Command Center — KPIs, swarm health (14 agents), budget meters, event feed |
-| `/mission` | Mission Control — 15-node pipeline DAG, live transcript (fixture stream), rounds, kill switch |
+| `/` | Orchestrator World View — 9 runtime agents + G1/G2 gates (manifest-driven) |
+| `/mission` | Mission Control — 9-agent pipeline DAG (+ G1/G2 gates), live transcript (fixture stream), rounds, kill switch |
 | `/findings` | Findings Explorer — 24 findings, filter chips, detail drawer with judge verdict breakdown |
 | `/scorecard` | Weighted 6-dimension scorecard (total 46.5 · Poor · Level 2), bars + radar |
 | `/dossier` | Regulatory Dossier — pack → control matrix (EU AI Act / ISO 42001 / NIST AI RMF / OWASP) |

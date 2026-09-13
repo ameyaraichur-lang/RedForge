@@ -7,7 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { eventToLine, useLive, type LiveEvent, type LiveGate, type NodeState } from '@/lib/live';
-import { WORLD_NODE_BY_ID } from '@/lib/world-theme';
+import { fetchWorldManifest, manifestNodeById } from '@/lib/world-manifest';
 import { worldBus } from '@/lib/world-bus';
 import { cn } from '@/lib/utils';
 
@@ -58,10 +58,20 @@ export function NodeHologram({
   events: LiveEvent[];
   onClose: () => void;
 }) {
-  const node = WORLD_NODE_BY_ID[nodeId];
   const { refreshGates, signGate } = useLive();
   const [gates, setGates] = useState<LiveGate[] | null>(null);
   const [signing, setSigning] = useState(false);
+  const [node, setNode] = useState<ReturnType<typeof manifestNodeById>[string] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchWorldManifest().then((m) => {
+      if (alive) setNode(manifestNodeById(m)[nodeId] ?? null);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [nodeId]);
 
   useEffect(() => {
     let alive = true;

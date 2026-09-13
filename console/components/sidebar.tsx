@@ -6,9 +6,10 @@ import { cn } from '@/lib/utils';
 import { Icon, type IconName } from '@/components/icon';
 
 const NAV: Array<{ href: string; label: string; icon: IconName }> = [
-  { href: '/', label: 'Command', icon: 'command' },
+  { href: '/', label: '✦ Orchestrator', icon: 'sentinel' },
+  { href: '/command', label: 'Command', icon: 'command' },
   { href: '/mission', label: 'Mission', icon: 'mission' },
-  { href: '/world', label: '✦ World', icon: 'sentinel' },
+  { href: '/world', label: 'World', icon: 'sentinel' },
   { href: '/findings', label: 'Findings', icon: 'findings' },
   { href: '/scorecard', label: 'Scorecard', icon: 'scorecard' },
   { href: '/dossier', label: 'Dossier', icon: 'dossier' },

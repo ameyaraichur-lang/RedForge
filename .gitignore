@@ -27,3 +27,4 @@ Thumbs.db
 # Local env (never commit keys)
 .env
 .env.*
+!.env.example

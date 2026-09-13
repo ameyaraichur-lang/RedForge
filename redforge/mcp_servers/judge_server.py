@@ -14,7 +14,7 @@ import uuid
 
 from fastmcp import FastMCP
 
-from redforge.judge import DemoLLMJudge, decide, make_verdict
+from redforge.judge import decide, get_judge, make_verdict
 
 mcp = FastMCP("redforge-judge")
 
@@ -40,9 +40,9 @@ def judge_attempt(payload: str, response: str, tech_id: str, canary: str = "",
     context = {"canary": canary} if canary else {}
     rule = decide(payload, response, tech_id, tool_calls=tool_calls,
                   tokens_used=tokens_used, context=context)
-    llm = DemoLLMJudge().judge(payload, response, tech_id,
-                               tool_calls=tool_calls, tokens_used=tokens_used,
-                               context=context)
+    llm = get_judge().judge(payload, response, tech_id,
+                            tool_calls=tool_calls, tokens_used=tokens_used,
+                            context=context)
     verdict = make_verdict(f"RF-A-{uuid.uuid4().hex[:8]}", tech_id, rule, llm)
     out = verdict.model_dump(mode="json")
     out["escalated"] = out["escalated_to_human"]
@@ -60,11 +60,25 @@ def judge_packs() -> dict:
 @mcp.tool
 def judge_status() -> dict:
     """Describe the judging pipeline: active mode, packs covered, fusion rules."""
-    from redforge.config import settings  # noqa: PLC0415
+    from redforge.config import effective_judge_provider, effective_target_provider, settings  # noqa: PLC0415
+    from redforge.targets import get_target_adapter, target_adapter_kind  # noqa: PLC0415
     from redforge.judge.detectors import DETECTORS  # noqa: PLC0415
+    from redforge.judge.llm_judge import AstraLLMJudge, DemoLLMJudge, RealLLMJudge  # noqa: PLC0415
+
+    judge = get_judge()
+    if isinstance(judge, AstraLLMJudge):
+        mode = "astra"
+    elif isinstance(judge, RealLLMJudge):
+        mode = "real-llm"
+    else:
+        mode = "demo-heuristic"
 
     return {
-        "mode": "real-llm" if settings.target_api_key else "demo-heuristic",
+        "llm_provider": settings.llm_provider,
+        "target_provider": effective_target_provider(),
+        "judge_provider": effective_judge_provider(),
+        "target_adapter": target_adapter_kind(get_target_adapter()),
+        "mode": mode,
         "packs": sorted(DETECTORS.keys()),
         "outcomes": ["Success", "Fail", "Close"],
         "fusion": {

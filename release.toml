@@ -1,0 +1,3 @@
+# Authoritative RedForge release metadata — single source for Python, Node, and API.
+version = "0.8.0"
+codename = "m8-ritual"

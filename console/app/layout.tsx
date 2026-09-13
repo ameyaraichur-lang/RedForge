@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { LiveProvider } from '@/lib/live';
+import { OperatorProvider } from '@/lib/operator-context';
 import { Copilot } from '@/components/hud/copilot';
 
 export const metadata: Metadata = {
@@ -21,8 +22,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <LiveProvider>
-          {children}
-          <Copilot />
+          <OperatorProvider>
+            {children}
+            <Copilot />
+          </OperatorProvider>
         </LiveProvider>
       </body>
     </html>

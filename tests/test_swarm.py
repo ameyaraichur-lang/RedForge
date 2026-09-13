@@ -50,7 +50,12 @@ async def test_full_mini_campaign():
 
     types = {e["type"] for e in result.events}
     assert {"node_start", "node_end", "attempt", "verdict", "gate_approved",
-            "scorecard"} <= types
+            "scorecard", "campaign_end"} <= types
+    g2 = [e for e in result.events if e.get("type") == "gate_approved" and e.get("gate_level") == "G2"]
+    assert g2, "G2 release countersign must emit after campaign completion"
+    assert result.events.index(g2[0]) > next(
+        i for i, e in enumerate(result.events) if e["type"] == "campaign_end"
+    )
     # round-2 mutations gained nothing against the demo -> bounded early stop
     assert "mutation_stop" in types
 

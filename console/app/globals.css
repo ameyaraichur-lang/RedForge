@@ -284,6 +284,42 @@ body {
   box-shadow: 0 0 10px color-mix(in srgb, var(--w-ok) 60%, transparent);
 }
 
+/* hero entry — single status line; no bloom ghosting or repeated tokens */
+.hero-entry-status {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: color-mix(in srgb, var(--w-dim) 92%, transparent);
+  text-shadow: none;
+}
+.hero-entry-brand {
+  color: color-mix(in srgb, var(--w-text) 75%, var(--w-dim));
+  font-weight: 600;
+}
+.hero-entry-sep {
+  margin: 0 0.45em;
+  opacity: 0.45;
+}
+.hero-entry-state {
+  color: color-mix(in srgb, var(--w-text) 88%, var(--w-halo));
+}
+.hero-entry-audio-badge {
+  font-size: 8px;
+  letter-spacing: 0.24em;
+  text-shadow: none;
+}
+.hero-entry-audio-badge--mic {
+  color: color-mix(in srgb, var(--w-acc, #4fd8ff) 85%, white);
+}
+.hero-entry-audio-badge--tts {
+  color: color-mix(in srgb, var(--w-audio, #ff8c1a) 88%, white);
+}
+.hero-entry-caption {
+  font-size: 13px;
+  letter-spacing: 0.2em;
+  color: color-mix(in srgb, var(--w-text) 92%, transparent);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--w-halo) 25%, transparent);
+}
+
 /* captions — the JARVIS voice presence */
 .world-caption {
   font-size: 21px;

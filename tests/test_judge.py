@@ -5,8 +5,8 @@ import pytest
 from redforge.catalog import seeds_for
 from redforge.config import settings
 from redforge.contracts import markers_for
-from redforge.judge import (DETECTORS, DemoLLMJudge, RealLLMJudge, combine,
-                            decide, get_judge, make_verdict)
+from redforge.judge import (DETECTORS, AstraLLMJudge, DemoLLMJudge, RealLLMJudge,
+                            combine, decide, get_judge, make_verdict)
 from redforge.schemas import JudgeOutcome, LLMDecision, RuleDecision
 
 CANARY = "RF-CANARY-deadbeef"
@@ -172,12 +172,45 @@ def test_real_judge_requires_api_key(monkeypatch):
 
 
 def test_get_judge_demo_by_default(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "demo")
     monkeypatch.setattr(settings, "target_api_key", "")
+    monkeypatch.setattr(settings, "astra_api_key", "")
     assert isinstance(get_judge(), DemoLLMJudge)
 
 
 def test_get_judge_real_when_key_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "real")
     monkeypatch.setattr(settings, "target_api_key", "sk-live-key")
     judge = get_judge()
     assert isinstance(judge, RealLLMJudge)
     assert judge.configured
+
+
+def test_get_judge_astra_when_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "astra")
+    monkeypatch.setattr(settings, "astra_api_key", "test-key")
+    judge = get_judge()
+    assert isinstance(judge, AstraLLMJudge)
+    assert judge.configured
+
+
+def test_get_judge_astra_without_key_falls_back_to_demo(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "astra")
+    monkeypatch.setattr(settings, "astra_api_key", "")
+    assert isinstance(get_judge(), DemoLLMJudge)
+
+
+def test_get_judge_respects_explicit_judge_provider(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "demo")
+    monkeypatch.setattr(settings, "judge_provider", "astra")
+    monkeypatch.setattr(settings, "astra_api_key", "test-key")
+    assert isinstance(get_judge(), AstraLLMJudge)
+
+
+def test_effective_target_stays_demo_when_judge_is_astra(monkeypatch):
+    from redforge.config import effective_judge_provider, effective_target_provider
+
+    monkeypatch.setattr(settings, "llm_provider", "astra")
+    monkeypatch.setattr(settings, "target_provider", "")
+    assert effective_judge_provider() == "astra"
+    assert effective_target_provider() == "demo"

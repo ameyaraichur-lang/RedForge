@@ -93,7 +93,7 @@ export default function CommandCenterPage() {
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
         <Panel
-          title="Swarm Health · 14 agents"
+          title="Swarm Health · 9 runtime agents + G1/G2"
           className="xl:col-span-2"
           bodyClassName="p-0"
           actions={<StatusChip status="running" label="10 running" />}

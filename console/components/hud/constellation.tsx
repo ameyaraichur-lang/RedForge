@@ -1,6 +1,7 @@
 'use client';
 
-// JARVIS-layer 3D swarm constellation (M6b+): the 15-node DAG as a living
+// Ops HUD schematic (non-runtime layout) — node IDs match /api/world/manifest;
+// positions are ops-drill-down only, not the World View planet ring.
 // organism. react-three-fiber + drei + bloom postprocessing. Node spheres glow
 // by live state; attack paths pulse when edges are hot. Degrades gracefully:
 // WebGL failure falls back to null (the schematic SVG DAG remains underneath).
@@ -29,21 +30,21 @@ const NODES: CNode[] = [
   { id: 'G2_release', label: 'G2', sub: 'release', gate: true, pos: [12.4, 0.0, 0] },
 ];
 
+// Edge pairs mirror /api/world/manifest (runtime topology); layout positions remain ops-schematic.
 const EDGES: [string, string][] = [
   ['N0_mission_control', 'N1_recon'],
-  ['N0_mission_control', 'N2_attack_strategist'],
   ['N1_recon', 'N2_attack_strategist'],
   ['N2_attack_strategist', 'N3_red_operators'],
   ['N3_red_operators', 'N4_judge'],
   ['N4_judge', 'N5_mutator'],
   ['N5_mutator', 'N3_red_operators'],
   ['N4_judge', 'G1_gatekeeper'],
-  ['N3_red_operators', 'G1_gatekeeper'],
   ['G1_gatekeeper', 'N6_chain_builder'],
   ['G1_gatekeeper', 'N7_verifier'],
   ['N6_chain_builder', 'N8_scorer'],
   ['N7_verifier', 'N8_scorer'],
   ['N8_scorer', 'G2_release'],
+  ['G2_release', 'N0_mission_control'],
 ];
 
 const STATE_COLOR: Record<NodeState, string> = {

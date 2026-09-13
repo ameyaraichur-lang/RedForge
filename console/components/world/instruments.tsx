@@ -88,7 +88,23 @@ function Clock() {
   return <span className="world-clock font-mono tabular-nums">{now}</span>;
 }
 
-export function WorldStatusBar({ themeName, onToggleTheme }: { themeName: string; onToggleTheme: () => void }) {
+type QualityTier = 'high' | 'medium' | 'low';
+
+export function WorldStatusBar({
+  themeName,
+  onToggleTheme,
+  quality,
+  onQualityChange,
+  entryLabel,
+  showVoiceToggle = true,
+}: {
+  themeName: string;
+  onToggleTheme: () => void;
+  quality?: QualityTier;
+  onQualityChange?: (q: QualityTier) => void;
+  entryLabel?: string;
+  showVoiceToggle?: boolean;
+}) {
   const { connected, status, voiceOn, setVoiceOn } = useLive();
   const running = status?.running ?? false;
   const mode = running
@@ -110,25 +126,40 @@ export function WorldStatusBar({ themeName, onToggleTheme }: { themeName: string
           <Pill tone="ok">secure</Pill>
           <Pill tone="warn">demo-mode</Pill>
           <Pill tone="dim">session {status?.campaign_id?.slice(0, 12) ?? '——'}</Pill>
+          {entryLabel && <Pill tone="dim">{entryLabel}</Pill>}
         </div>
       </div>
       <div className="pointer-events-auto flex items-center gap-5">
         <MicroCaps>
           mode <span className="world-mode">{mode}</span>
         </MicroCaps>
+        {quality && onQualityChange && (
+          <select
+            aria-label="Visual quality tier"
+            className="world-ctl bg-transparent font-mono text-[9px]"
+            value={quality}
+            onChange={(e) => onQualityChange(e.target.value as QualityTier)}
+          >
+            <option value="high">quality · high</option>
+            <option value="medium">quality · medium</option>
+            <option value="low">quality · low</option>
+          </select>
+        )}
         <Clock />
         <button type="button" onClick={onToggleTheme} className="world-ctl" aria-label="Toggle world theme">
           theme · {themeName}
         </button>
-        <button
-          type="button"
-          onClick={() => setVoiceOn(!voiceOn)}
-          className="world-ctl"
-          aria-pressed={voiceOn}
-          aria-label="Toggle voice"
-        >
-          voice {voiceOn ? 'on' : 'off'}
-        </button>
+        {showVoiceToggle && (
+          <button
+            type="button"
+            onClick={() => setVoiceOn(!voiceOn)}
+            className="world-ctl"
+            aria-pressed={voiceOn}
+            aria-label="Toggle voice"
+          >
+            voice {voiceOn ? 'on' : 'off'}
+          </button>
+        )}
         <a href="/mission" className="world-ctl" aria-label="Return to ops mode">
           ops mode ↗
         </a>

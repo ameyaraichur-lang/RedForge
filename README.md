@@ -8,7 +8,7 @@
 
 ## What this is
 
-RedForge runs a **15-node attack swarm** (9 agents + 2 human gates) against an LLM-driven target, end to end:
+RedForge runs a **9-agent attack pipeline + 2 human gates** (11 runtime swarm nodes) against an LLM-driven target, end to end:
 
 - **40 attack techniques** across 8 packs — `PIN` prompt injection, `EXF` exfiltration, `OUT` unsafe output, `AGE` agentic escalation, `MEM` memory poisoning, `CON` context manipulation, `HAL` hallucination, `SUP` shadow-tool abuse (OWASP LLM / MITRE ATLAS mapped)
 - **Dual-mode judging** per attempt — deterministic rule detectors fused with an LLM judge (demo stub until keys are added), single-writer verdict combine, escalation to humans
@@ -30,18 +30,20 @@ The console ships two experiences on one live SSE stream:
 
 ## Quickstart
 
-Prerequisites: **Python 3.12+**, **Node 18+**. Optional: OPA binary for real Rego scoring (a Python fallback is built in). No LLM API keys needed — RedForge is **demo-first** (decision D3): it attacks a bundled *vulnerable demo copilot* and the LLM judge runs as a deterministic stub. Add real keys later via `.env` to unlock live-LLM attack mode.
+Prerequisites: **Python 3.12+**, **Node 18+**, **[uv](https://docs.astral.sh/uv/)** (recommended). Optional: OPA binary for real Rego scoring (a Python fallback is built in). No LLM API keys needed — RedForge is **demo-first** (decision D3): it attacks a bundled *vulnerable demo copilot* and the LLM judge runs as a deterministic stub. Add real keys later via `.env` to unlock live-LLM attack mode.
+
+Versioning: `release.toml` is the single source of truth (`0.8.0` + codename `m8-ritual` → Python `0.8.0+m8.ritual`, npm `0.8.0-m8-ritual`). Run `python scripts/verify_versions.py` to check drift.
 
 ```bash
-# 1) engine
-pip install -e ".[dev]"          # or: pip install -e . && pip install pytest httpx
+# 1) engine (reproducible lock)
+uv sync --group dev                # uses uv.lock; or: pip install -e ".[dev]"
 
 # 2) Live API  (:8000)
 python -m uvicorn redforge.api.server:app --host 127.0.0.1 --port 8000
 
 # 3) console   (:3100)
 cd console
-npm install
+npm ci                           # reproducible from package-lock.json
 npm run build && npm run start -- -p 3100
 
 # 4) open the world
@@ -52,10 +54,15 @@ npm run build && npm run start -- -p 3100
 Headless verification of everything:
 
 ```bash
-python -m pytest tests/ -q              # 147 tests
+python -m pytest tests/ -q              # 165+ tests (4 optional skips without PyRIT/OPA)
+python scripts/verify_versions.py      # release.toml drift guard
 python scripts/run_gates.py             # 14 milestone gates + pass rate
 python scripts/e2e_console.py           # full campaign driven through the World View UI (Playwright)
 python scripts/run_e2e.py               # headless CLI end-to-end campaign
+
+# Opt-in live Astra judge smoke (paid Azure — never CI):
+RF_LIVE_ASTRA=1 python -m pytest -m live_astra -v
+python scripts/smoke_astra.py
 ```
 
 ## Repo layout
@@ -70,7 +77,7 @@ redforge/            the engine package
   scoring/           scorecard engine, severity matrix, OPA/Rego runner
   canary/            canary minting, webhook listener, proof
   evidence/          sqlite evidence store + verifier
-  swarm/             15-node campaign engine + bounded mutator
+  swarm/             9-agent campaign engine + G1/G2 gates + bounded mutator
   reporting/         compliance controls, citation lint, PDF renderer
   mcp_servers/       6 P0 MCP servers (target-adapter, pyrit, judge, canary, opa, evidence)
   api/               Live API: SSE event bus, gates, findings, report

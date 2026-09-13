@@ -16,7 +16,7 @@ and ships an audit-grade regulatory dossier (EU AI Act Art 15 / ISO 42001 / NIST
 
 Blueprint entities: 6 architecture layers, 10 target classes, 40 techniques (PIN 10, EXF 7, OUT 4,
 AGE 7, MEM 3, CON 4, HAL 3, SUP 2), 6-dimension scorecard (weights .25/.20/.20/.15/.10/.10),
-phases A0–A6, 15-node swarm DAG (12 agents + G1/G2 human gates), 14 agents, 13 MCP servers
+phases A0–A6, 9 runtime pipeline agents + G1/G2 gates (11 swarm nodes; 14 fixture schematic nodes in ops HUD only), 6 MCP servers
 (6 P0), 36 tasks / 12 weeks, 14 KPIs, 10 risks.
 
 ## 2. Scope decisions (locked)
@@ -102,7 +102,7 @@ Modules: schemas/ contracts/flaws.py (40 canonical flaw specs) catalog/ (40 tech
 scripts + scorecard) targets/ (vulnerable sim + OpenAI-compat app + adapter) canary/ judge/
 (detectors + DemoLLMJudge + combine — dual-mode) scoring/ (Python engine + Rego + OPA runner;
 workbook-exact 46.5 parity verified) evidence/ (sqlite store + verifier) swarm/ (CampaignEngine
-15-node DAG, bounded rounds, budget caps, gate auto-approve/strict) reporting/ (compliance map +
+9-agent runtime DAG + G1/G2, bounded rounds, budget caps, gate auto-approve/strict) reporting/ (compliance map +
 scribe with citation lint + PDF) mcp_servers/ (6 P0 servers, stdio-verified).
 MCP registration: `C:/Users/ameya/ZCodeProject/.zcode/config.json` → 6 servers auto-connect on
 session start (mcp__redforge-* tools). Console M6a: `redforge/console/` (background agent).
@@ -137,7 +137,7 @@ clean light views for client execs.
 
 **Screens (10)**:
 1. Command Center — active campaigns, swarm health, budget burn, KPI tiles
-2. **Mission Control (flagship)** — live 15-node DAG (React Flow), streaming transcript feed,
+2. **Mission Control (flagship)** — live 9-agent + G1/G2 DAG (React Flow), streaming transcript feed,
    round tracker (R1–R3), budget meters, kill-switch, agent-trace replay
 3. Findings Explorer — filters (pack/technique/severity/target), evidence drawer
    (transcript + dual-mode verdict breakdown + confidence), FP-void workflow, kill-chain graph
@@ -160,7 +160,7 @@ workspaces, white-label client views, full view/export audit trail, WCAG 2.1 AA,
 API-first (UI = just another client of the same REST/MCP surface).
 
 ### HUD Mode (JARVIS layer — D7, added session 4)
-- **Visual**: react-three-fiber + drei + postprocessing (bloom) — 15-node swarm as living 3D
+- **Visual**: react-three-fiber + drei + postprocessing (bloom) — manifest-driven 11-node swarm as living 3D
   constellation, particle flows along attack paths, camera fly-to, exploded agent views;
   shader HUD (scanlines, glass panels, grid floor, noise); GSAP cinematic timelines +
   Framer Motion UI springs; materialize/dematerialize transitions; central "core orb" swarm

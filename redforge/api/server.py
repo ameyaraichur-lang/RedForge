@@ -13,20 +13,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from ..catalog import PACKS, TECHNIQUES, TARGET_CATALOGUE, demo_target
+from ..operator.audit import AuditChainError, AuditStore
+from ..operator.auth import (
+    SESSION_COOKIE,
+    OperatorPrincipal,
+    authenticate_credentials,
+    bootstrap_demo_session,
+    create_session_response,
+    resolve_principal,
+)
+from ..operator.parser import parse_natural_language
+from ..operator.schemas import OperatorAction
+from ..operator.confirm_store import ConfirmationStore
+from ..operator.secrets import assert_secure_operator_config
+from ..operator.service import OperatorService
+from ..operator.voice import SttRequest, TtsRequest, get_voice_gateway
+
+from ..catalog import PACKS, TECHNIQUES, TARGET_CATALOGUE, campaign_target, demo_target, world_manifest
+from ..config import effective_judge_provider, effective_target_provider, settings
 from ..evidence.store import EvidenceStore
+from ..judge import get_judge
+from ..judge.llm_judge import AstraLLMJudge, DemoLLMJudge, RealLLMJudge
 from ..reporting import generate_report, render_pdf
 from ..schemas import BudgetCaps, Campaign
 from ..swarm import CampaignEngine
 from ..swarm.runner import CampaignResult
-from ..targets.adapter import demo_adapter
+from ..targets import get_target_adapter, target_adapter_kind
+from ..version import api_version, release_codename
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "output" / "live"
+OPERATOR_DB_PATH = Path(settings.operator_db)
 
 
 class LiveStore(EvidenceStore):
@@ -133,22 +154,25 @@ class LiveCampaign:
         self.queues = subscribers
         self.seq = seq
         self.store = LiveStore()
+        target_spec = campaign_target()
+        adapter = get_target_adapter()
+        live_provider = effective_target_provider()
         self.campaign = Campaign(
             id=f"C-LIVE-{datetime.now(timezone.utc).strftime('%H%M%S')}",
-            name="RedForge live console campaign",
-            targets=[demo_target()],
+            name=f"RedForge live campaign ({live_provider} target)",
+            targets=[target_spec],
             packs=packs or list(PACKS),
             rounds_max=max(1, min(3, rounds)),
             caps=BudgetCaps(max_attempts=600, max_tokens=50_000_000, max_cost_usd=100.0),
         )
         self.started_at = datetime.now(timezone.utc).isoformat()
-        engine = CampaignEngine()
+        engine = CampaignEngine(judge=get_judge())
         engine.on_event = self.publish
 
         async def _run() -> None:
             try:
                 self.result = await engine.run_campaign(
-                    self.campaign, demo_adapter(), store=self.store)
+                    self.campaign, adapter, store=self.store)
                 self._finish()
             except asyncio.CancelledError:
                 self.error = "aborted"
@@ -161,10 +185,15 @@ class LiveCampaign:
                 self.publish({"type": "campaign_error", "error": self.error})
 
         self.task = asyncio.create_task(_run())
+        judge_provider = effective_judge_provider()
         self.publish({"type": "campaign_start", "campaign_id": self.campaign.id,
-                      "packs": self.campaign.packs, "rounds_max": self.campaign.rounds_max})
+                      "packs": self.campaign.packs, "rounds_max": self.campaign.rounds_max,
+                      "target_id": target_spec.id, "target_provider": live_provider,
+                      "judge_provider": judge_provider})
         return {"campaign_id": self.campaign.id, "packs": self.campaign.packs,
-                "rounds_max": self.campaign.rounds_max}, 200
+                "rounds_max": self.campaign.rounds_max,
+                "target_id": target_spec.id, "target_provider": live_provider,
+                "judge_provider": judge_provider}, 200
 
     def abort(self) -> dict:
         if self.running and self.task:
@@ -232,7 +261,58 @@ class LiveCampaign:
 
 live = LiveCampaign()
 
-app = FastAPI(title="RedForge Live API", version="1.0.0")
+_confirm_store = ConfirmationStore(OPERATOR_DB_PATH)
+_audit_store = AuditStore(OPERATOR_DB_PATH)
+
+
+def _operator_service() -> OperatorService:
+    return OperatorService(
+        _audit_store,
+        _confirm_store,
+        live_status=live.status,
+        live_start=live.start,
+        live_abort=live.abort,
+        live_gates=lambda: live.gates,
+        live_findings=lambda: (
+            [f.model_dump(mode="json") for f in live.store.live_findings]
+            if live.store else []
+        ),
+        live_sign_gate=lambda gid, signer: _gates_sign_impl(gid, signer),
+        live_report=lambda: _report_impl(),
+        live_events=lambda: live.events,
+    )
+
+
+def _gates_sign_impl(gate_id: str, signer: str) -> dict:
+    for g in live.gates:
+        if g["id"] == gate_id:
+            if signer not in g["approvals"]:
+                g["approvals"].append(signer)
+            g["decided"] = len(g["approvals"]) >= 2
+            live.publish({"type": "gate_signed", "gate_request_id": g["id"],
+                          "signer": signer, "approvals": list(g["approvals"]),
+                          "decided": g["decided"]})
+            return g
+    return {"error": "unknown gate"}
+
+
+def _report_impl() -> dict:
+    md = OUTPUT_DIR / "report.md"
+    pdf = OUTPUT_DIR / "report.pdf"
+    if not md.exists():
+        return {"ready": False}
+    return {"ready": True, "markdown": md.read_text(encoding="utf-8"),
+            "pdf_path": str(pdf), "pdf_bytes": pdf.stat().st_size if pdf.exists() else 0}
+
+
+operator_svc = _operator_service()
+voice_gw = get_voice_gateway()
+
+app = FastAPI(
+    title="RedForge Live API",
+    version=api_version(),
+    description=f"Release codename: {release_codename()}",
+)
 # NOTE: SSE is consumed cross-origin from the console (:3100; :3000 kept for the
 # reference app) — Next rewrites buffer the streamed body for browsers, so the
 # console's EventSource targets this origin directly (quirk Q-11).
@@ -247,10 +327,35 @@ class StartBody(BaseModel):
     rounds: int = 3
 
 
+def _judge_mode() -> str:
+    judge = get_judge()
+    if isinstance(judge, AstraLLMJudge):
+        return "astra"
+    if isinstance(judge, RealLLMJudge):
+        return "real-llm"
+    return "demo-heuristic"
+
+
+@app.on_event("startup")
+def _operator_security_startup() -> None:
+    assert_secure_operator_config()
+    _confirm_store.cleanup_expired()
+
+
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "provider": "demo", "running": live.running,
-            "events": len(live.events)}
+    audit_ok = _audit_store.chain_valid
+    return {
+        "ok": audit_ok,
+        "target_provider": effective_target_provider(),
+        "judge_provider": effective_judge_provider(),
+        "target_adapter": target_adapter_kind(get_target_adapter()),
+        "judge_mode": _judge_mode(),
+        "running": live.running,
+        "events": len(live.events),
+        "operator_audit_chain_ok": audit_ok,
+        "operator_audit_chain_error": _audit_store.chain_error,
+    }
 
 
 @app.post("/api/campaign/start")
@@ -313,7 +418,7 @@ def findings_list() -> list[dict]:
 def verdicts_list() -> list[dict]:
     return [{"attempt_id": e.get("attempt_id"), "tech_id": e.get("tech_id"),
              "combined": e.get("combined"), "escalated": e.get("escalated"),
-             "seq": e["seq"], "ts": e["ts"]}
+             "llm_judge": e.get("llm_judge"), "seq": e["seq"], "ts": e["ts"]}
             for e in live.events if e["type"] == "verdict"]
 
 
@@ -353,8 +458,7 @@ def report() -> dict:
 
 @app.get("/api/targets")
 def targets() -> list[dict]:
-    return [t.model_dump(mode="json") for t in
-            [*TARGET_CATALOGUE, demo_target()]]
+    return [t.model_dump(mode="json") for t in [*TARGET_CATALOGUE, demo_target()]]
 
 
 @app.get("/api/techniques")
@@ -367,6 +471,150 @@ def techniques() -> list[dict]:
 @app.get("/api/packs")
 def packs() -> dict:
     return {k: v["name"] for k, v in PACKS.items()}
+
+
+@app.get("/api/world/manifest")
+def world_manifest_api() -> dict:
+    """Authoritative Mission Control agent/DAG topology for the console."""
+    return world_manifest().model_dump()
+
+
+# ------------------------------------------------------------------ operator
+class IntentBody(BaseModel):
+    text: str
+    source: str = "text"
+
+
+class ActionBody(BaseModel):
+    action: OperatorAction
+    confirmation_token: str | None = None
+
+
+@app.post("/api/operator/intent")
+def operator_intent(
+    body: IntentBody,
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> JSONResponse:
+    parsed = parse_natural_language(body.text, source=body.source)
+    if not parsed:
+        return JSONResponse({"ok": False, "error": "no matching intent"}, status_code=422)
+    return JSONResponse({
+        "ok": True,
+        "intent": parsed.model_dump(),
+        "actor": principal.actor,
+    })
+
+
+@app.post("/api/operator/action")
+async def operator_action(
+    body: ActionBody,
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> JSONResponse:
+    result = await operator_svc.execute(
+        body.action,
+        principal,
+        confirmation_token=body.confirmation_token,
+    )
+    code = 200 if result.ok or result.requires_confirmation else 400
+    return JSONResponse(result.model_dump(), status_code=code)
+
+
+@app.get("/api/operator/plan")
+def operator_plan(
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> dict:
+    return operator_svc.build_plan().model_dump()
+
+
+@app.get("/api/operator/audit")
+def operator_audit(
+    limit: int = 50,
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> JSONResponse:
+    try:
+        rows = [r.model_dump() for r in _audit_store.list_records(limit=min(limit, 200))]
+    except AuditChainError as exc:
+        return JSONResponse(
+            {"error": "audit chain verification failed", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse(rows)
+
+
+@app.post("/api/operator/voice/stt")
+async def operator_voice_stt(
+    body: SttRequest,
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> JSONResponse:
+    if body.simulate_transcript and settings.operator_auth_mode == "secure":
+        return JSONResponse({"error": "simulate_transcript forbidden in secure mode"}, status_code=403)
+    resp = await voice_gw.transcribe(body)
+    return JSONResponse(resp.model_dump())
+
+
+@app.post("/api/operator/voice/tts")
+async def operator_voice_tts(
+    body: TtsRequest,
+    principal: OperatorPrincipal = Depends(resolve_principal),
+) -> JSONResponse:
+    resp = await voice_gw.synthesize(body)
+    return JSONResponse(resp.model_dump())
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/operator/config")
+def operator_config() -> dict:
+    """Public operator auth config (no secrets)."""
+    return {
+        "auth_mode": settings.operator_auth_mode,
+        "demo_bootstrap": settings.operator_demo_bootstrap,
+        "voice_mode": settings.operator_voice_mode,
+        "session_ttl_minutes": settings.operator_session_ttl_minutes,
+    }
+
+
+@app.post("/api/operator/login")
+def operator_login(body: LoginBody, response: Response) -> dict:
+    principal = authenticate_credentials(body.username, body.password)
+    return create_session_response(principal, response)
+
+
+@app.post("/api/operator/logout")
+def operator_logout(response: Response) -> dict:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/operator/bootstrap")
+def operator_bootstrap(response: Response) -> dict:
+    """Demo-labeled operator session only — explicit demo mode + RF_OPERATOR_DEMO_BOOTSTRAP=1."""
+    return bootstrap_demo_session(response)
+
+
+@app.get("/api/operator/session")
+def operator_session(request: Request) -> JSONResponse:
+    """Session probe — always 200; never 401 (avoids startup poll noise in the console)."""
+    try:
+        p = resolve_principal(request)
+    except HTTPException as exc:
+        if exc.status_code in (401, 403):
+            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            return JSONResponse({"authenticated": False, "error": detail})
+        raise
+    body: dict = {
+        "authenticated": True,
+        "actor": p.actor,
+        "role": p.role.value,
+        "auth_mode": p.auth_mode,
+    }
+    if p.auth_mode == "demo-labeled":
+        body["demo_labeled"] = True
+        body["label"] = "DEMO ONLY — not enterprise authentication"
+    return JSONResponse(body)
 
 
 if __name__ == "__main__":

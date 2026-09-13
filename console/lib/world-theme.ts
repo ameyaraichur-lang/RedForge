@@ -78,63 +78,12 @@ export function writeThemeName(n: WorldThemeName): void {
 }
 
 // ---------------------------------------------------------------------------
-// Constellation map — the 9 swarm nodes + 2 human gates, laid out around the
-// RedForge core like the NIMBUS satellite ring. Color families carry meaning:
-// recon=amber, offense=warm, adjudication=green, evolution=violet, outcome=gold.
+// Pulse edge indices — must match redforge/catalog/world_manifest.py edge order.
+// Swarm layout/nodes come ONLY from /api/world/manifest (no UI fallback list).
 // ---------------------------------------------------------------------------
 
-export type WorldNode = {
-  id: string;
-  name: string;
-  role: string;
-  color: string;
-  angle: number; // degrees around the core
-  radius: number;
-  y: number; // vertical offset for depth
-  gate?: 'G1' | 'G2';
-};
-
-export const WORLD_NODES: WorldNode[] = [
-  { id: 'N0_mission_control', name: 'MISSION', role: 'mission control', color: '#7fe7ff', angle: 96, radius: 10.4, y: 2.3 },
-  { id: 'N1_recon', name: 'SCOUT', role: 'recon', color: '#f5b841', angle: 137, radius: 11.4, y: -0.6 },
-  { id: 'N2_attack_strategist', name: 'STRATEGIST', role: 'attack planner', color: '#ff8c4d', angle: 176, radius: 9.8, y: 1.2 },
-  { id: 'N3_red_operators', name: 'OPERATORS', role: 'red execution', color: '#ff4d9d', angle: 214, radius: 12.2, y: -1.4 },
-  { id: 'N4_judge', name: 'SENTINEL', role: 'adjudicator', color: '#3bff9e', angle: 253, radius: 10.6, y: 0.8 },
-  { id: 'N5_mutator', name: 'MUTATOR', role: 'evolution', color: '#9d5cff', angle: 291, radius: 11.8, y: -1.8 },
-  { id: 'G1_gatekeeper', name: 'G1', role: 'two-person gate', color: '#f5b841', angle: 322, radius: 12.8, y: 0.4, gate: 'G1' },
-  { id: 'N6_chain_builder', name: 'CHAINER', role: 'kill chains', color: '#5ea0ff', angle: 352, radius: 13.6, y: 2.2 },
-  { id: 'N7_verifier', name: 'VERIFIER', role: 'fp-kill', color: '#4fe3c1', angle: 17, radius: 11.2, y: -2.4 },
-  { id: 'N8_scorer', name: 'SCORER', role: 'opa policy', color: '#ffd166', angle: 47, radius: 13.0, y: 0.6 },
-  { id: 'G2_release', name: 'G2', role: 'release gate', color: '#7fe7ff', angle: 71, radius: 14.4, y: -1.2, gate: 'G2' },
-];
-
-export function nodePosition(n: WorldNode): [number, number, number] {
-  const a = (n.angle * Math.PI) / 180;
-  return [Math.cos(a) * n.radius, n.y, Math.sin(a) * n.radius];
-}
-
-export const WORLD_NODE_BY_ID: Record<string, WorldNode> = Object.fromEntries(
-  WORLD_NODES.map((n) => [n.id, n]),
-);
-
-// Constellation links (from,to) — index into EDGES is the pulse channel.
-export const WORLD_EDGES: [string, string][] = [
-  ['CORE', 'N0_mission_control'],
-  ['CORE', 'N1_recon'],
-  ['N0_mission_control', 'N1_recon'],
-  ['N1_recon', 'N2_attack_strategist'],
-  ['N2_attack_strategist', 'N3_red_operators'],
-  ['N3_red_operators', 'N4_judge'],
-  ['N4_judge', 'N5_mutator'],
-  ['N5_mutator', 'N3_red_operators'],
-  ['N4_judge', 'G1_gatekeeper'],
-  ['G1_gatekeeper', 'N6_chain_builder'],
-  ['G1_gatekeeper', 'N7_verifier'],
-  ['N6_chain_builder', 'N8_scorer'],
-  ['N7_verifier', 'N8_scorer'],
-  ['N8_scorer', 'G2_release'],
-  ['G2_release', 'N0_mission_control'],
-];
+/** Canonical manifest edge count — keep in sync with world_manifest.py. */
+export const MANIFEST_EDGE_COUNT = 15;
 
 // Which channel an attempt/verdict pulse rides.
 export const PULSE_CHANNELS = {

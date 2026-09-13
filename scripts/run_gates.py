@@ -2,6 +2,7 @@
 aggregates with the pytest suite into one overall pass rate (target >= 95%)."""
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -9,6 +10,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+
+# Must run before any redforge import so local .env Astra config cannot affect gates.
+from redforge.gates.demo_env import apply_gate_demo_env, gate_demo_env
+
+apply_gate_demo_env()
 
 GATES: list[dict] = []
 
@@ -68,7 +74,8 @@ def g_m1_canary():
 def g_m2_judge():
     from redforge.catalog import seeds_for
     from redforge.contracts import markers_for
-    from redforge.judge import DemoLLMJudge, decide, make_verdict
+    from redforge.judge import decide, make_verdict
+    from redforge.judge.llm_judge import DemoLLMJudge
     payload = seeds_for("PIN-001")[0]
     resp = " ".join(markers_for("PIN-001"))
     rule = decide(payload, resp, "PIN-001")
@@ -157,17 +164,42 @@ def _fixture_findings():
 
 
 # ---------------- E2E ----------------
+def g_visual_capture_sanity():
+    evidence = ROOT / "output" / "visual-fidelity" / "evidence.json"
+    sanity_script = ROOT / "scripts" / "check_visual_sanity.py"
+    assert evidence.exists(), "visual fidelity evidence missing — run scripts/run_visual_capture.sh"
+    proc = subprocess.run(
+        [sys.executable, str(sanity_script)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert proc.returncode == 0, (proc.stdout + proc.stderr)[-2000:]
+    return "visual capture sanity checks passed on output/visual-fidelity/evidence.json"
+
+
 def g_e2e_artifacts():
-    out = ROOT / "output" / "e2e"
-    s = json.loads((out / "summary.json").read_text())
+    from redforge.e2e.artifacts import validate_canonical, validate_summary_invariants
+
+    validated = validate_canonical()
+    s = validated["summary"]
+    manifest = validated["manifest"]
     assert s["stopped_reason"] == "completed"
     assert set(s["packs_confirmed"]) == {"PIN", "EXF", "OUT", "AGE", "MEM", "CON", "HAL", "SUP"}
     assert s["findings_confirmed"] >= 30
+    out = ROOT / "output" / "e2e"
     assert (out / "report.md").stat().st_size > 1000
     assert (out / "report.pdf").stat().st_size > 1000
-    assert s["evidence_counts"]["findings"] == s["findings_total"]
-    return (f"campaign {s['campaign_id']}: {s['attempts']} attempts, {s['findings_confirmed']}"
-            f"/{s['findings_total']} confirmed, 8/8 packs, score {s['score_total']} {s['score_band']}")
+    validate_summary_invariants(s)
+    assert manifest["summary"]["attempts"] == s["attempts"]
+    assert manifest["evidence_counts"] == s["evidence_counts"]
+    return (
+        f"run {manifest['run_id']} seed={manifest.get('seed')}: "
+        f"campaign {s['campaign_id']}: {s['attempts']} attempts, "
+        f"{s['findings_confirmed']}/{s['findings_total']} confirmed, 8/8 packs, "
+        f"score {s['score_total']} {s['score_band']}"
+    )
 
 
 # ---------------- M6b / M6b+ ----------------
@@ -201,36 +233,59 @@ def g_m6b_console_build():
         assert d in deps, f"3D dep missing: {d}"
     build_marker = base / ".next" / "BUILD_ID"
     assert build_marker.exists(), "production build missing (.next/BUILD_ID)"
-    return "live provider + 6 HUD components + 3D deps + reduced-motion guardrail + prod build"
+    unit = subprocess.run(
+        ["npm", "run", "test:unit"],
+        cwd=base,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert unit.returncode == 0, (unit.stdout + unit.stderr)[-1200:]
+    return "live provider + 6 HUD components + 3D deps + reduced-motion guardrail + prod build + entry FSM vitest"
 
 
 # ---------------- M6c ----------------
 def g_m6c_console_e2e():
     """M6c: campaign driven THROUGH the console UI; FP gate <= 10%.
-    Full browser re-run is slow and load-sensitive — by default we verify the
-    artifacts of the last passing run (summary is written ONLY on PASS); set
-    RF_GATE_RERUN_E2E=1 to force the live browser re-run."""
-    import os
-    import time as _time
+    Always re-run live browser E2E (operator entry + console campaign)."""
     summary_path = ROOT / "output" / "console" / "e2e_console_summary.json"
-    if os.environ.get("RF_GATE_RERUN_E2E") == "1" or not summary_path.exists():
-        proc = subprocess.run([sys.executable, "scripts/e2e_console.py"],
-                              cwd=ROOT, capture_output=True, text=True, timeout=900)
-        out = proc.stdout + proc.stderr
-        assert proc.returncode == 0, out[-600:]
+    op_proc = subprocess.run(
+        [sys.executable, "scripts/e2e_operator.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=dict(gate_demo_env()),
+    )
+    op_out = op_proc.stdout + op_proc.stderr
+    assert op_proc.returncode == 0, op_out[-1200:]
+    proc = subprocess.run(
+        [sys.executable, "scripts/e2e_console.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=900,
+        env=dict(gate_demo_env()),
+    )
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 0, out[-1200:]
     assert summary_path.exists(), "no e2e summary — run scripts/e2e_console.py"
-    age_min = (_time.time() - summary_path.stat().st_mtime) / 60
-    assert age_min < 180, f"e2e summary is stale ({age_min:.0f} min old) — re-run scripts/e2e_console.py"
     summary = json.loads(summary_path.read_text())
     assert summary["fp_rate"] <= 0.10, summary
     assert len(summary["packs"]) == 8, summary
-    shots = ["live-mission.png", "hud-mode.png", "live-findings.png", "live-gates.png"]
+    shots = [
+        "orchestrator-live.png",
+        "operator-dock.png",
+        "live-findings.png",
+        "live-gates.png",
+        "fallback-text.png",
+    ]
     for s in shots:
         assert (ROOT / "output" / "console" / s).stat().st_size > 20000, f"screenshot too small: {s}"
     return (f"console-driven campaign: {summary['attempts']} attempts, "
             f"{summary['confirmed']}/{summary['findings']} confirmed, 8/8 packs, "
             f"fp {summary['fp_rate']}, score {summary['score']} {summary['band']}, "
-            f"pdf {summary['pdf_bytes']}b, 4 screenshots")
+            f"pdf {summary['pdf_bytes']}b, {len(shots)} screenshots")
 
 
 def main():
@@ -247,6 +302,7 @@ def main():
     gate("M6b live api (sse campaign)", g_m6b_live_api)
     gate("M6b+ console build + HUD layer", g_m6b_console_build)
     gate("M6c console-driven e2e + fp gate", g_m6c_console_e2e)
+    gate("Visual capture sanity (evidence artifacts)", g_visual_capture_sanity)
     gate("E2E artifacts (all packs confirmed)", g_e2e_artifacts)
 
     # pytest suite

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "redforge"
-version = "0.1.0"
+dynamic = ["version"]
 description = "AI-RedForge: Agentic AI Red-Team Factory — blueprint Tier-1 demo implementation"
 requires-python = ">=3.12"
 dependencies = [
@@ -24,9 +24,20 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.28", "playwright>=1.49", "pillow>=11.0"]
+
 [tool.setuptools.packages.find]
 include = ["redforge*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "redforge.version.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "optional_pyrit: requires the optional PyRIT package",
+    "optional_opa: requires the OPA binary at RF_OPA_PATH",
+    "live_astra: calls paid Azure Astra (opt-in via RF_LIVE_ASTRA=1 only)",
+]

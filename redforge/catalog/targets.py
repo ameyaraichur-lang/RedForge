@@ -53,3 +53,8 @@ def demo_target() -> TargetSpec:
         target_class=TargetClass.EMPLOYEE_COPILOT, interface=Interface.MODEL_API,
         packs=["PIN", "EXF", "OUT", "AGE", "MEM", "CON", "HAL", "SUP"],
         prod_safety_notes="Local fixture — seeded flaw per pack (M1 gate)", asset_criticality=2)
+
+
+def campaign_target() -> TargetSpec:
+    """Target spec for live campaigns (always the demo fixture unless extended)."""
+    return demo_target()

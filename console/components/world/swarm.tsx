@@ -1,46 +1,65 @@
 'use client';
 
-// The swarm constellation (D8 phase 3): 9 agent nodes + 2 human gates around
-// the core, hairline links with diamond gate waypoints and traveling light
-// pulses, impact ripples on verdicts, camera-as-navigation with damped fly-to.
-// Heavy per-frame state lives on the world bus; React only owns selection.
+// Manifest-driven swarm constellation — every backend-defined agent + gate crystal.
 
-import { useMemo, useRef } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import { useFrame, type ThreeEvent } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { worldBus, type WorldHandoff } from '@/lib/world-bus';
+import { type WorldTheme } from '@/lib/world-theme';
 import {
-  WORLD_EDGES,
-  WORLD_NODES,
+  manifestEdgesAsPairs,
   nodePosition,
-  type WorldNode,
-  type WorldTheme,
-} from '@/lib/world-theme';
+  type ManifestNode,
+  type WorldManifest,
+} from '@/lib/world-manifest';
 import type { NodeState } from '@/lib/live';
+import { summonCameraEase } from '@/lib/summon-easing';
 import { PLANET_SPECS, PlanetBody } from '@/components/world/planet';
 
-const EDGE_POS: Record<string, [number, number, number]> = {
-  CORE: [0, 0, 0],
-  ...Object.fromEntries(WORLD_NODES.map((n) => [n.id, nodePosition(n)])),
+type SwarmLayout = {
+  nodes: ManifestNode[];
+  edges: [string, string][];
+  positions: Record<string, [number, number, number]>;
+  edgeSegments: Array<[THREE.Vector3, THREE.Vector3]>;
 };
 
-export const EDGE_SEGMENTS: Array<[THREE.Vector3, THREE.Vector3]> = WORLD_EDGES.map(
-  ([a, b]) => [new THREE.Vector3(...EDGE_POS[a]), new THREE.Vector3(...EDGE_POS[b])],
-);
+const LayoutCtx = createContext<SwarmLayout | null>(null);
+
+function buildLayout(m: WorldManifest | null): SwarmLayout | null {
+  if (!m?.nodes?.length) return null;
+  const nodes = m.nodes;
+  const edges = manifestEdgesAsPairs(m);
+  const positions: Record<string, [number, number, number]> = {
+    CORE: [0, 0, 0],
+    ...Object.fromEntries(nodes.map((n) => [n.id, nodePosition(n)])),
+  };
+  const edgeSegments = edges.map(
+    ([a, b]) => [
+      new THREE.Vector3(...(positions[a] ?? [0, 0, 0])),
+      new THREE.Vector3(...(positions[b] ?? [0, 0, 0])),
+    ] as [THREE.Vector3, THREE.Vector3],
+  );
+  return { nodes, edges, positions, edgeSegments };
+}
+
+function isGate(node: ManifestNode): boolean {
+  return node.kind === 'gate';
+}
 
 function EdgeLines({ theme, bloomStart }: { theme: WorldTheme; bloomStart: number | null }) {
+  const layout = useContext(LayoutCtx)!;
   const geo = useMemo(() => {
     const g = new THREE.BufferGeometry();
     const pts: number[] = [];
-    for (const [a, b] of EDGE_SEGMENTS) pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    for (const [a, b] of layout.edgeSegments) pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
     g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
     return g;
-  }, []);
+  }, [layout.edgeSegments]);
   const mat = useRef<THREE.LineBasicMaterial>(null);
   useFrame(() => {
     if (mat.current) {
-      // links draw in as the constellation blooms (edges stagger ~3.5s)
       const revealT = bloomStart === null ? -1 : (performance.now() - bloomStart) / 1000;
       const k = THREE.MathUtils.clamp((revealT + 0.5) / 3.5, 0, 1);
       mat.current.opacity = 0.55 * k * k;
@@ -48,36 +67,22 @@ function EdgeLines({ theme, bloomStart }: { theme: WorldTheme; bloomStart: numbe
   });
   return (
     <lineSegments geometry={geo}>
-      <lineBasicMaterial
-        ref={mat}
-        color={theme.link}
-        transparent
-        opacity={0}
-        blending={THREE.AdditiveBlending}
-        depthWrite={false}
-      />
+      <lineBasicMaterial ref={mat} color={theme.link} transparent opacity={0} blending={THREE.AdditiveBlending} depthWrite={false} />
     </lineSegments>
   );
 }
 
-/**
- * Handoff choreography (D9 / WV2-6): when agent A finishes and agent B
- * triggers, the A→B link blinks three times while packets stream across —
- * fired exactly once per handoff (bus dedupes by transition).
- */
 function HandoffLinks() {
+  const layout = useContext(LayoutCtx)!;
   const seen = useRef<Set<WorldHandoff>>(new Set());
   const lines = useRef<Array<THREE.Line | null>>([]);
   useFrame(() => {
     for (const h of worldBus.handoffs) {
       if (!seen.current.has(h)) {
         seen.current.add(h);
-        // stream 6 packets along the edge (speed spread staggers them)
-        const idx = WORLD_EDGES.findIndex(([a, b]) => a === h.from && b === h.to);
+        const idx = layout.edges.findIndex(([a, b]) => a === h.from && b === h.to);
         if (idx >= 0) {
-          for (let k = 0; k < 6; k++) {
-            worldBus.spawnPulse(idx, '#ffffff', 1.1 + k * 0.18);
-          }
+          for (let k = 0; k < 6; k++) worldBus.spawnPulse(idx, '#ffffff', 1.1 + k * 0.18);
         }
       }
     }
@@ -90,8 +95,8 @@ function HandoffLinks() {
         continue;
       }
       l.visible = true;
-      const from = EDGE_POS[h.from] ?? EDGE_POS.CORE;
-      const to = EDGE_POS[h.to] ?? EDGE_POS.CORE;
+      const from = layout.positions[h.from] ?? layout.positions.CORE;
+      const to = layout.positions[h.to] ?? layout.positions.CORE;
       const pos = l.geometry.getAttribute('position') as THREE.BufferAttribute;
       pos.setXYZ(0, from[0], from[1], from[2]);
       pos.setXYZ(1, to[0], to[1], to[2]);
@@ -103,13 +108,7 @@ function HandoffLinks() {
   return (
     <>
       {Array.from({ length: 6 }, (_, i) => (
-        <lineSegments
-          key={i}
-          visible={false}
-          ref={(el) => {
-            lines.current[i] = el as unknown as THREE.Line;
-          }}
-        >
+        <lineSegments key={i} visible={false} ref={(el) => { lines.current[i] = el as unknown as THREE.Line; }}>
           <bufferGeometry>
             <bufferAttribute attach="attributes-position" args={[new Float32Array(6), 3]} />
           </bufferGeometry>
@@ -123,6 +122,7 @@ function HandoffLinks() {
 const PULSE_POOL = 28;
 
 function EdgePulses() {
+  const layout = useContext(LayoutCtx)!;
   const refs = useRef<Array<THREE.Mesh | null>>([]);
   useFrame(() => {
     for (let i = 0; i < PULSE_POOL; i++) {
@@ -134,14 +134,11 @@ function EdgePulses() {
         continue;
       }
       m.visible = true;
-      const [a, b] = EDGE_SEGMENTS[p.edge];
-      const t = p.t;
-      // ease so the pulse accelerates out and fades in
-      const te = t * t * (3 - 2 * t);
+      const [a, b] = layout.edgeSegments[p.edge];
+      const te = p.t * p.t * (3 - 2 * p.t);
       m.position.lerpVectors(a, b, te);
-      m.position.y += Math.sin(te * Math.PI) * 0.35; // slight arc
-      const s = 0.5 + Math.sin(te * Math.PI) * 0.9;
-      m.scale.setScalar(Math.max(0.05, s));
+      m.position.y += Math.sin(te * Math.PI) * 0.35;
+      m.scale.setScalar(Math.max(0.05, 0.5 + Math.sin(te * Math.PI) * 0.9));
       const mat = m.material as THREE.MeshBasicMaterial;
       mat.color.set(p.color);
       mat.opacity = Math.sin(te * Math.PI) * 0.95;
@@ -150,13 +147,7 @@ function EdgePulses() {
   return (
     <>
       {Array.from({ length: PULSE_POOL }, (_, i) => (
-        <mesh
-          key={i}
-          ref={(el) => {
-            refs.current[i] = el;
-          }}
-          visible={false}
-        >
+        <mesh key={i} ref={(el) => { refs.current[i] = el; }} visible={false}>
           <sphereGeometry args={[0.16, 10, 10]} />
           <meshBasicMaterial color="#ffffff" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} />
         </mesh>
@@ -190,7 +181,6 @@ function GateCrystal({ color, active }: { color: string; active: boolean }) {
         <octahedronGeometry args={[0.32, 0]} />
         <meshBasicMaterial color="#ffffff" transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} />
       </mesh>
-      <pointLight color={color} intensity={6} distance={6} />
     </group>
   );
 }
@@ -203,14 +193,16 @@ function SwarmNode({
   labelSide,
   index,
   bloomStart,
+  summonReveal = 1,
 }: {
-  node: WorldNode;
+  node: ManifestNode;
   state: NodeState;
   selected: boolean;
   onSelect: (id: string | null) => void;
   labelSide: number;
   index: number;
-  bloomStart: number | null; // performance.now() when the summon began
+  bloomStart: number | null;
+  summonReveal?: number;
 }) {
   const planetGroup = useRef<THREE.Group>(null);
   const ring = useRef<THREE.Mesh>(null);
@@ -223,13 +215,13 @@ function SwarmNode({
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const revealT = bloomStart === null ? -1 : (performance.now() - bloomStart) / 1000;
-    const reveal = THREE.MathUtils.clamp((revealT - index * 0.35) / 0.7, 0, 1);
+    const gated = summonReveal < 0.05 ? 0 : THREE.MathUtils.clamp((summonReveal - index * 0.06) / 0.55, 0, 1);
+    const reveal = THREE.MathUtils.clamp((revealT - index * 0.35) / 0.7, 0, 1) * gated;
     const glow = worldBus.nodeGlow[node.id] ?? 0;
     const impact = worldBus.impacts.find((i) => i.node === node.id);
     const active = state === 'active';
     const lit = state === 'pending' ? 0 : 1;
     if (planetGroup.current) {
-      // elastic bloom-in multiplied onto the event pulse
       const bloom = elasticOut(reveal);
       const s = bloom * (1 + (active ? 0.09 * Math.sin(t * 5) : 0) + glow * 0.22 + (selected ? 0.14 : 0));
       planetGroup.current.scale.setScalar(Math.max(0.0001, s));
@@ -238,22 +230,21 @@ function SwarmNode({
     if (ring.current) {
       ring.current.visible = reveal > 0.5;
       ring.current.rotation.z = t * (active ? 1.4 : 0.22);
-      const rs = 1 + (active ? 0.18 * Math.sin(t * 3) : 0) + glow * 0.5;
-      ring.current.scale.setScalar(rs);
+      ring.current.scale.setScalar(1 + (active ? 0.18 * Math.sin(t * 3) : 0) + glow * 0.5);
       (ring.current.material as THREE.MeshBasicMaterial).opacity = (0.18 + lit * 0.32 + glow * 0.4) * reveal;
     }
     if (labelWrap.current) {
       labelWrap.current.style.opacity = String(THREE.MathUtils.clamp((reveal - 0.85) / 0.15, 0, 1));
       labelWrap.current.style.pointerEvents = reveal > 0.99 ? 'auto' : 'none';
     }
-    if (ripple.current) {
-      const k = impact ? impact.t : 1;
-      const vis = impact ? 1 - k : 0;
+    if (ripple.current && impact) {
+      const k = impact.t;
+      const vis = 1 - k;
       ripple.current.visible = vis > 0.02;
       if (ripple.current.visible) {
         ripple.current.scale.setScalar(1 + k * 3.2);
-        (ripple.current.material as THREE.MeshBasicMaterial).opacity = vis * 0.7 * (impact?.strength ?? 1);
-        (ripple.current.material as THREE.MeshBasicMaterial).color.set(impact?.color ?? node.color);
+        (ripple.current.material as THREE.MeshBasicMaterial).opacity = vis * 0.7 * (impact.strength ?? 1);
+        (ripple.current.material as THREE.MeshBasicMaterial).color.set(impact.color ?? node.color);
       }
     }
   });
@@ -262,18 +253,12 @@ function SwarmNode({
 
   return (
     <group position={pos}>
-      {/* raycast target — sized to the body, invisible but hit-testable */}
-      <mesh
-        onClick={(e: ThreeEvent<MouseEvent>) => {
-          e.stopPropagation();
-          onSelect(selected ? null : node.id);
-        }}
-      >
+      <mesh onClick={(e: ThreeEvent<MouseEvent>) => { e.stopPropagation(); onSelect(selected ? null : node.id); }}>
         <sphereGeometry args={[Math.max(0.85, spec.size * 1.7), 12, 12]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
       <group ref={planetGroup}>
-        {node.gate ? (
+        {isGate(node) ? (
           <GateCrystal color={node.color} active={state === 'active'} />
         ) : (
           <PlanetBody spec={spec} nodeId={node.id} />
@@ -293,7 +278,6 @@ function SwarmNode({
           <meshBasicMaterial color="#ffffff" transparent opacity={0.8} blending={THREE.AdditiveBlending} depthWrite={false} />
         </mesh>
       )}
-      {/* labels alternate above/below so neighbors never collide */}
       <Html position={[0, labelSide, 0]} center zIndexRange={[15, 0]} style={{ pointerEvents: 'none' }}>
         <div ref={labelWrap} style={{ opacity: 0 }}>
           <button
@@ -305,7 +289,6 @@ function SwarmNode({
             style={{ ['--tone' as string]: labelTone }}
           >
             <span className="world-node-name">{node.name}</span>
-            <span className="world-node-role">{node.role}</span>
             <span className="world-node-state" data-state={state}>{state}</span>
           </button>
         </div>
@@ -315,76 +298,105 @@ function SwarmNode({
 }
 
 export function SwarmConstellation({
+  manifest,
   states,
   selected,
   onSelect,
   theme,
   bloomStart,
+  summonReveal = 1,
 }: {
+  manifest: WorldManifest | null;
   states: Record<string, NodeState>;
   selected: string | null;
   onSelect: (id: string | null) => void;
   theme: WorldTheme;
-  bloomStart: number | null; // performance.now() when the orchestrator summoned the swarm
+  bloomStart: number | null;
+  summonReveal?: number;
 }) {
+  const layout = useMemo(() => buildLayout(manifest), [manifest]);
+  const ordered = useMemo(() => {
+    if (!layout) return [];
+    if (manifest?.pipeline_order?.length) {
+      const byId = Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+      return manifest.pipeline_order.map((id) => byId[id]).filter(Boolean);
+    }
+    return layout.nodes;
+  }, [layout, manifest]);
+
   const group = useRef<THREE.Group>(null);
   useFrame((_, dt) => {
-    // the whole constellation slowly precesses — the world is never still
     if (group.current) group.current.rotation.y += dt * 0.008;
   });
+
+  if (!layout) return null;
+
   return (
-    <group ref={group}>
-      <EdgeLines theme={theme} bloomStart={bloomStart} />
-      <HandoffLinks />
-      <EdgePulses />
-      {WORLD_NODES.map((n, i) => (
-        <SwarmNode
-          key={n.id}
-          node={n}
-          state={states[n.id] ?? 'pending'}
-          selected={selected === n.id}
-          onSelect={onSelect}
-          labelSide={i % 2 === 0 ? -1.35 : 1.35}
-          index={i}
-          bloomStart={bloomStart}
-        />
-      ))}
-    </group>
+    <LayoutCtx.Provider value={layout}>
+      <group ref={group}>
+        <EdgeLines theme={theme} bloomStart={bloomStart} />
+        <HandoffLinks />
+        <EdgePulses />
+        {ordered.map((n, i) => (
+          <SwarmNode
+            key={n.id}
+            node={n}
+            state={states[n.id] ?? 'pending'}
+            selected={selected === n.id}
+            onSelect={onSelect}
+            labelSide={i % 2 === 0 ? -1.35 : 1.35}
+            index={n.id === 'N0_mission_control' ? ordered.length + 3 : ('pipeline_order' in n ? n.pipeline_order : i)}
+            bloomStart={bloomStart}
+            summonReveal={summonReveal}
+          />
+        ))}
+      </group>
+    </LayoutCtx.Provider>
   );
 }
 
-/** Overshoot ease for the planet bloom-in. */
 function elasticOut(t: number): number {
   if (t <= 0) return 0;
   if (t >= 1) return 1;
   return 1 - Math.pow(2, -9 * t) * Math.cos(t * 13);
 }
 
-// ---------------------------------------------------------------------------
-// Camera rig — overview ⟷ node fly-to, damped, with pointer parallax.
-// ---------------------------------------------------------------------------
+// Framed so the full bust (crown to shoulder cut) sits inside portrait margins.
+const HEAD_POS = new THREE.Vector3(0, 0.4, 11.4);
+const HEAD_TARGET = new THREE.Vector3(0, -0.15, 0);
+const WORLD_POS = new THREE.Vector3(0, 5.2, 26);
+const WORLD_TARGET = new THREE.Vector3(0, 0.5, 0);
 
 export function CameraRig({
   focusId,
   reducedMotion,
   mode,
+  manifest,
+  summonProgress,
 }: {
   focusId: string | null;
   reducedMotion: boolean;
   mode: 'head' | 'world';
+  manifest?: WorldManifest | null;
+  /** Live or capture summon progress 0–1 — camera follows summon-easing curve. */
+  summonProgress?: number | null;
 }) {
-  const desiredPos = useRef(new THREE.Vector3(0, 5.5, 27));
-  const desiredTarget = useRef(new THREE.Vector3(0, 0, 0));
-  const curTarget = useRef(new THREE.Vector3(0, 0, 0));
+  const layout = useMemo(() => buildLayout(manifest ?? null), [manifest]);
+  const desiredPos = useRef(new THREE.Vector3().copy(HEAD_POS));
+  const desiredTarget = useRef(new THREE.Vector3().copy(HEAD_TARGET));
+  const curTarget = useRef(new THREE.Vector3().copy(HEAD_TARGET));
 
   useFrame(({ camera, pointer }, dt) => {
-    const k = 1 - Math.exp(-dt * 2.6); // frame-rate independent damping
-    if (mode === 'head') {
-      // boot framing: close on the assembling orchestrator
-      desiredPos.current.set(0, 1.1, 9.8);
-      desiredTarget.current.set(0, 0.7, 0);
-    } else if (focusId) {
-      const n = WORLD_NODES.find((x) => x.id === focusId);
+    const k = 1 - Math.exp(-dt * 2.6);
+    if (summonProgress != null) {
+      const camT = summonCameraEase(summonProgress);
+      desiredPos.current.copy(HEAD_POS).lerp(WORLD_POS, camT);
+      desiredTarget.current.copy(HEAD_TARGET).lerp(WORLD_TARGET, camT);
+    } else if (mode === 'head') {
+      desiredPos.current.copy(HEAD_POS);
+      desiredTarget.current.copy(HEAD_TARGET);
+    } else if (focusId && layout) {
+      const n = layout.nodes.find((x) => x.id === focusId);
       if (n) {
         const p = new THREE.Vector3(...nodePosition(n));
         const dir = p.clone().normalize();
@@ -392,11 +404,11 @@ export function CameraRig({
         desiredTarget.current.copy(p);
       }
     } else {
-      desiredPos.current.set(0, 5.5, 27);
-      desiredTarget.current.set(0, 0.6, 0);
+      desiredPos.current.copy(WORLD_POS);
+      desiredTarget.current.copy(WORLD_TARGET);
       if (!reducedMotion) {
-        desiredPos.current.x += pointer.x * 1.6;
-        desiredPos.current.y += pointer.y * 1.1;
+        desiredPos.current.x += pointer.x * 1.2;
+        desiredPos.current.y += pointer.y * 0.8;
       }
     }
     camera.position.lerp(desiredPos.current, k);

@@ -23,15 +23,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from redforge.canary import make_canary, substitute
+from redforge.e2e.ids import RunIds
 from redforge.catalog import PACKS, pack_techniques, seeds_for, technique
 from redforge.config import settings
 from redforge.judge import decide, make_verdict
+from redforge.judge import get_judge
 from redforge.judge.llm_judge import DemoLLMJudge
 from redforge.schemas import (AttackAttempt, BudgetUsage, Campaign, EvidenceRef,
                               Finding, FindingStatus, GateRequest,
@@ -49,10 +50,6 @@ COST_PER_TOKEN = 0.000002
 
 # Mutation is bounded at 3 rounds by catalog contract (Technique.round_no 1..3).
 MAX_ROUNDS = 3
-
-
-def _hex8() -> str:
-    return uuid.uuid4().hex[:8]
 
 
 # --------------------------------------------------------------- evidence store
@@ -118,6 +115,7 @@ class _CampaignRun:
     # chain finding id -> (pin, age, exf) source finding ids
     chain_refs: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     canary_cache: dict[str, str] = field(default_factory=dict)
+    ids: RunIds = field(default_factory=RunIds)
     gate_cache: dict[str, GateRequest] = field(default_factory=dict)
     gate_allowed: dict[str, bool] = field(default_factory=dict)
     success_techs: set[str] = field(default_factory=set)
@@ -135,11 +133,13 @@ class CampaignEngine:
 
     def __init__(self, strict_gates: bool = False, judge: Any = None,
                  store: Any = None,
-                 on_event: Callable[[dict], None] | None = None) -> None:
+                 on_event: Callable[[dict], None] | None = None,
+                 run_seed: int | None = None) -> None:
         self.strict_gates = strict_gates
-        self.judge = judge if judge is not None else DemoLLMJudge()
+        self.judge = judge if judge is not None else get_judge()
         self.store = store              # EvidenceStore | None (lazy-typed, D4)
         self.on_event = on_event
+        self.run_seed = run_seed        # None -> uuid ids; int -> reproducible demo
         self.events: list[dict] = []    # engine-wide event log (all campaigns)
         self._current_events: list[dict] | None = None  # set during run_campaign
 
@@ -200,8 +200,12 @@ class CampaignEngine:
     # ==================================================================
     async def run_campaign(self, campaign: Campaign, adapter: TargetAdapter,
                            store: Any = None) -> CampaignResult:
-        run = _CampaignRun(campaign=campaign, adapter=adapter,
-                           store=store if store is not None else self.store)
+        run = _CampaignRun(
+            campaign=campaign,
+            adapter=adapter,
+            store=store if store is not None else self.store,
+            ids=RunIds(self.run_seed),
+        )
         self._current_events = run.events
         try:
             for target in campaign.targets:      # multiple targets: sequential
@@ -218,6 +222,15 @@ class CampaignEngine:
             self._emit("campaign_end", campaign_id=campaign.id,
                        stopped_reason=run.stopped_reason,
                        attempts=run.usage.attempts, findings=len(run.findings))
+            if (run.stopped_reason == "completed" and run.scorecard
+                    and len(run.findings) > 0 and not self.strict_gates):
+                self._emit(
+                    "gate_approved",
+                    gate_request_id=f"RF-G2-{run.ids.hex8()}",
+                    technique_id="release",
+                    gate_level="G2",
+                    approvals=["auto-operator", "auto-redlead"],
+                )
             return CampaignResult(
                 campaign_id=campaign.id,
                 attempts=run.usage.attempts,
@@ -290,7 +303,7 @@ class CampaignEngine:
                              tech_id: str, shadow: list[str]) -> None:
         """Synthesize an audit-grade finding from the registry diff."""
         tech = technique(tech_id)
-        attempt_id = f"RF-A-{_hex8()}"
+        attempt_id = f"RF-A-{run.ids.hex8()}"
         rule = RuleDecision(
             detector="recon:tool-registry-diff", outcome=JudgeOutcome.SUCCESS,
             reason=(f"{len(shadow)} tools visible in the live registry but absent "
@@ -300,7 +313,8 @@ class CampaignEngine:
                           confidence=0.95,
                           reason="registry diff directly observed; no model "
                                  "generation involved")
-        verdict = make_verdict(attempt_id, tech_id, rule, llm)
+        verdict = make_verdict(attempt_id, tech_id, rule, llm,
+                               _id_suffix=run.ids.hex8)
         run.verdicts.append(verdict)
         await self._persist(run.store, verdict)
         finding = Finding(
@@ -396,8 +410,8 @@ class CampaignEngine:
         webhook = self._webhook()
         context = {"canary": canary, "webhook": webhook,
                    "usage_cap": campaign.caps.max_tokens}
-        attempt_id = f"RF-A-{_hex8()}"
-        transcript = Transcript(id=f"RF-T-{_hex8()}", attempt_id=attempt_id,
+        attempt_id = f"RF-A-{run.ids.hex8()}"
+        transcript = Transcript(id=f"RF-T-{run.ids.hex8()}", attempt_id=attempt_id,
                                 technique_id=tech_id, target_id=target.id)
         attempt = AttackAttempt(id=attempt_id, campaign_id=campaign.id,
                                 technique_id=tech_id, target_id=target.id,
@@ -429,7 +443,8 @@ class CampaignEngine:
                                    tool_calls=resp.tool_calls,
                                    tokens_used=resp.tokens_used,
                                    context=context)
-            verdict = make_verdict(attempt_id, tech_id, rule, llm)
+            verdict = make_verdict(attempt_id, tech_id, rule, llm,
+                                   _id_suffix=run.ids.hex8)
             run.verdicts.append(verdict)
             await self._persist(run.store, verdict)
             last_verdict = verdict
@@ -440,7 +455,8 @@ class CampaignEngine:
                 success_verdict = verdict
             self._emit("verdict", attempt_id=attempt_id, tech_id=tech_id,
                        combined=verdict.combined.value,
-                       escalated=verdict.escalated_to_human)
+                       escalated=verdict.escalated_to_human,
+                       llm_judge=llm.judge)
 
         attempt.tokens_used = tokens
         attempt.cost_usd = tokens * COST_PER_TOKEN
@@ -498,7 +514,7 @@ class CampaignEngine:
         if tech_id in run.gate_cache:
             return run.gate_allowed[tech_id]
         request = GateRequest(
-            id=f"RF-G-{_hex8()}", kind="prod_attack", technique_ids=[tech_id],
+            id=f"RF-G-{run.ids.hex8()}", kind="prod_attack", technique_ids=[tech_id],
             justification=(f"Technique {tech_id} ({tech.name}) is "
                            f"gate_level={tech.gate_level}: two-person G1 "
                            f"approval required before execution (tenet T5)."))
@@ -585,8 +601,13 @@ class CampaignEngine:
                                    tool_calls=resp.tool_calls,
                                    tokens_used=resp.tokens_used,
                                    context=context)
-            verdict = make_verdict(run.attempt_by_finding.get(finding.id, finding.id),
-                                   tech_id, rule, llm)
+            verdict = make_verdict(
+                run.attempt_by_finding.get(finding.id, finding.id),
+                tech_id,
+                rule,
+                llm,
+                _id_suffix=run.ids.hex8,
+            )
             run.verdicts.append(verdict)
             await self._persist(run.store, verdict)
             if verdict.combined is JudgeOutcome.SUCCESS:

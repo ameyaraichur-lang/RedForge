@@ -7,7 +7,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useLive, type LiveEvent } from '@/lib/live';
-import { speak } from '@/lib/voice';
+import { useOperator } from '@/lib/operator-context';
+import { speak, speakViaGateway } from '@/lib/voice';
 import { cn } from '@/lib/utils';
 
 type Caption = { id: number; text: string; tone: 'info' | 'ok' | 'warn' | 'crit' };
@@ -38,6 +39,7 @@ function captionFor(e: LiveEvent): Caption | null {
 
 export function WorldCaptions({ events, running }: { events: LiveEvent[]; running: boolean }) {
   const { voiceOn, lastBriefing } = useLive();
+  const { privacyMuted } = useOperator();
   const seen = useRef<number>(0);
   const [caption, setCaption] = useState<Caption | null>(null);
   const timer = useRef<number>(0);
@@ -47,7 +49,7 @@ export function WorldCaptions({ events, running }: { events: LiveEvent[]; runnin
     setCaption(c);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => setCaption(null), 3400);
-    if (speakIt) speak(c.text);
+    if (speakIt && voiceOn && !privacyMuted) void speakViaGateway(c.text).catch(() => speak(c.text));
   };
 
   // event-derived captions (escalations override everything — reel grammar)
@@ -99,7 +101,9 @@ export function WorldCaptions({ events, running }: { events: LiveEvent[]; runnin
         </p>
       )}
       {!caption && !running && (
-        <p className="world-caption-idle font-mono uppercase">redforge online and listening</p>
+        <p className="world-caption-idle font-mono uppercase">
+          {privacyMuted ? 'Voice muted · mission control standby' : 'Mission control standby'}
+        </p>
       )}
     </div>
   );
