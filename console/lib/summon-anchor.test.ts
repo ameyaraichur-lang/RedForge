@@ -4,6 +4,7 @@ import {
   clearSummonAnchor,
   getSummonElapsedMs,
   getSummonProgress,
+  installSummonCaptureHooks,
   resetSummonAnchor,
   setSummonHold,
   startSummonAnchor,
@@ -47,6 +48,15 @@ describe('summon-anchor', () => {
     startSummonAnchor(200);
     startSummonAnchor(800);
     expect(getSummonElapsedMs(1200)).toBe(1000);
+  });
+
+  it('capture seek sets progress while held', () => {
+    resetSummonAnchor(0);
+    installSummonCaptureHooks();
+    window.__RF_SUMMON_SEEK__?.(0.42);
+    expect(getSummonProgress(9999)).toBeCloseTo(0.42, 2);
+    window.__RF_SUMMON_SEEK__?.(0.91);
+    expect(getSummonProgress(9999)).toBeCloseTo(0.91, 2);
   });
 
   it('reset preserves hold when requested (capture arm)', () => {

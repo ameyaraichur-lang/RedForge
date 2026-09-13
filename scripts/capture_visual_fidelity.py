@@ -230,10 +230,23 @@ def set_capture_hold(page, assembly: bool, summon: bool) -> None:
 
 SUMMON_CLOCK_JS = """() => {
   const root = document.querySelector('main[data-entry-phase]');
+  const anchor = window.__RF_SUMMON_ANCHOR_MS__;
+  const dur = 5600;
+  let elapsed = 0;
+  if (anchor != null) {
+    let holdMs = window.__RF_SUMMON_HOLD_MS__ || 0;
+    if (window.__RF_SUMMON_HOLDING__ && window.__RF_SUMMON_HOLD_SINCE__ != null) {
+      holdMs += performance.now() - window.__RF_SUMMON_HOLD_SINCE__;
+    }
+    elapsed = Math.max(0, performance.now() - anchor - holdMs);
+  }
+  const liveT = anchor != null ? Math.min(1, elapsed / dur) : null;
+  const domT = parseFloat(root?.getAttribute('data-summon-t') || '0');
   return {
     phase: root?.getAttribute('data-entry-phase') ?? null,
-    t: parseFloat(root?.getAttribute('data-summon-t') || '0'),
-    anchor: (root?.getAttribute('data-summon-anchor-ms') || '').length > 0,
+    t: liveT != null && Number.isFinite(liveT) ? liveT : domT,
+    elapsedMs: elapsed,
+    anchor: anchor != null,
     holding: Boolean(window.__RF_SUMMON_HOLDING__),
   };
 }"""
@@ -436,7 +449,9 @@ def _capture_main() -> int:
 
             for name, qs in PHASE_STILLS:
                 page = ctx.new_page()
-                page.add_init_script("sessionStorage.clear()")
+                page.add_init_script(
+                    "sessionStorage.clear();",
+                )
                 page.goto(f"{ui}{qs}", wait_until="domcontentloaded", timeout=120000)
                 wait_entry_marker(page, diag_dir=diag_dir)
                 if "assembly=0.36" in qs:
@@ -492,8 +507,17 @@ def _capture_main() -> int:
             wait_entry_marker(page, diag_dir=diag_dir)
             page.wait_for_selector('[data-entry-phase="awaiting_entry"]', state="attached", timeout=60000)
             page.wait_for_selector('[data-head-formed="1"]', state="attached", timeout=60000)
+            page.wait_for_function(
+                "() => typeof window.__RF_SUMMON_SET_HOLD__ === 'function'",
+                timeout=15000,
+            )
+            # Hold before click so selector waits cannot advance the summon clock.
             page.evaluate(
-                "() => document.querySelector('[data-testid=\"enter-mission-control\"]')?.click()",
+                """() => {
+                  window.__RF_SUMMON_PRE_ARM__ = true;
+                  window.__RF_SUMMON_SET_HOLD__(true);
+                  document.querySelector('[data-testid="enter-mission-control"]')?.click();
+                }""",
             )
             page.wait_for_selector('[data-entry-phase="summoning"]', state="attached", timeout=45000)
             page.wait_for_function(
@@ -501,6 +525,7 @@ def _capture_main() -> int:
                 timeout=15000,
             )
             page.evaluate("() => { window.__RF_SUMMON_ARM__?.(); }")
+            set_capture_hold(page, assembly=False, summon=True)
             page.wait_for_function(
                 """() => {
                   const root = document.querySelector('main[data-entry-phase]');
@@ -512,6 +537,16 @@ def _capture_main() -> int:
                 }""",
                 timeout=30000,
             )
+            page.evaluate("() => { window.__RF_SUMMON_ARM__?.(); }")
+            set_capture_hold(page, assembly=False, summon=True)
+            page.wait_for_function(
+                """() => {
+                  const root = document.querySelector('main[data-entry-phase]');
+                  return root?.getAttribute('data-entry-phase') === 'summoning'
+                    && parseFloat(root.getAttribute('data-summon-t') || '1') < 0.08;
+                }""",
+                timeout=15000,
+            )
             summon_paths: list[str] = []
             summon_diag_frames: list[dict] = []
             summon_dir.mkdir(parents=True, exist_ok=True)
@@ -519,39 +554,31 @@ def _capture_main() -> int:
             # The summon clock stays held between frames and is released only to
             # advance to the next target, so slow frames cannot overshoot into
             # mission_control and strand the remaining targets.
-            set_capture_hold(page, assembly=False, summon=True)
+            page.wait_for_function(
+                "() => typeof window.__RF_SUMMON_SEEK__ === 'function'",
+                timeout=15000,
+            )
             for i in range(summon_frames):
                 target_ms = (i + 1) * summon_interval_ms
                 target_t = min(1.0, target_ms / summon_duration_ms)
                 if target_ms < summon_duration_ms:
-                    reached = advance_held_clock(
-                        page,
-                        SUMMON_CLOCK_JS,
-                        lambda s, target=target_t: s["phase"] != "summoning"
-                        or (s["anchor"] and s["t"] >= target - 0.025),
-                        label="summon",
-                        step_ms=min(summon_interval_ms, 100),
-                    )
-                    if reached["phase"] != "summoning":
-                        if reached["phase"] == "mission_control" and target_t >= 0.9:
-                            # Late summon frames may finish into mission_control — still capture.
-                            pass
-                        else:
-                            raise RuntimeError(
-                                f"summon left summoning before frame {i} (target t={target_t:.3f}): "
-                                f"{read_scene_diagnostics(page)}",
-                            )
+                    page.evaluate("(t) => window.__RF_SUMMON_SEEK__?.(t)", target_t)
+                    page.wait_for_timeout(80)
+                    state = page.evaluate(SUMMON_CLOCK_JS)
+                    if state["phase"] != "summoning":
+                        raise RuntimeError(
+                            f"summon left summoning before frame {i} (target t={target_t:.3f}): "
+                            f"{read_scene_diagnostics(page)}",
+                        )
+                    if not state["anchor"] or state["t"] < target_t - 0.06:
+                        raise RuntimeError(
+                            f"summon seek missed frame {i} (target t={target_t:.3f}): {state}",
+                        )
                 else:
-                    advance_held_clock(
-                        page,
-                        SUMMON_CLOCK_JS,
-                        lambda s: s["phase"] == "mission_control",
-                        label="summon",
-                        step_ms=100,
-                        leave_held=False,
-                    )
-                    page.wait_for_selector(
-                        '[data-entry-phase="mission_control"]', state="attached", timeout=60000,
+                    set_capture_hold(page, assembly=False, summon=False)
+                    page.wait_for_function(
+                        """() => document.querySelector('[data-entry-phase]')?.getAttribute('data-entry-phase') === 'mission_control'""",
+                        timeout=60000,
                     )
                 diag = read_scene_diagnostics(page)
                 path = summon_dir / f"summon-{i:03d}.png"
@@ -615,16 +642,31 @@ def _capture_main() -> int:
                 evidence["metrics"]["summon_video"] = sum_vid
 
             page = ctx.new_page()
-            page.add_init_script("sessionStorage.clear(); localStorage.setItem('rf-voice', '1')")
+            page.add_init_script(
+                "sessionStorage.clear(); localStorage.setItem('rf-voice', '1'); "
+                "window.__RF_CAPTURE_SPEAKING_HOLD__ = true;",
+            )
             page.goto(f"{ui}/", wait_until="domcontentloaded", timeout=120000)
             page.wait_for_selector('[data-head-formed="1"]', state="attached", timeout=120000)
-            page.wait_for_selector('[data-entry-phase="speaking"]', state="attached", timeout=90000)
+            page.wait_for_function(
+                """() => {
+                  const main = document.querySelector('main[data-entry-phase]');
+                  const status = document.querySelector('[data-hero-status]');
+                  const phase = main?.getAttribute('data-entry-phase') || '';
+                  const line = (status?.getAttribute('data-hero-status') || '').toLowerCase();
+                  return phase === 'speaking' && line.includes('tts');
+                }""",
+                timeout=90000,
+            )
             speak_p = read_assembly_progress(page)
             if speak_p < 0.99:
                 dump_page_diagnostics(page, "fail-speaking-progress", diag_dir)
                 raise RuntimeError(f"speaking lost bust progress={speak_p}")
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(400)
             speak_status = page.locator("[data-hero-status]").first.get_attribute("data-hero-status") or ""
+            speak_phase = page.locator("main[data-entry-phase]").first.get_attribute("data-entry-phase") or ""
+            if speak_phase != "speaking":
+                raise RuntimeError(f"speaking phase lost before screenshot: {speak_phase!r}")
             if page.locator('[data-audio-badge="mic-on"]').count() > 0:
                 raise RuntimeError("speaking phase must not show mic-on badge")
             if "mic on" in speak_status.lower() or "mic off" in speak_status.lower():
@@ -633,6 +675,7 @@ def _capture_main() -> int:
                 raise RuntimeError(f"speaking status must show TTS: {speak_status!r}")
             path = OUT / "phase-speaking-normal.png"
             page.screenshot(path=str(path), full_page=False, timeout=90000)
+            page.evaluate("() => window.__RF_RELEASE_SPEAKING_HOLD__?.()")
             evidence["screenshots"]["phase-speaking-normal"] = str(path.relative_to(ROOT))
             evidence["metrics"]["speaking_via_tts"] = True
             evidence["metrics"]["speaking_assembly_progress"] = speak_p
@@ -691,14 +734,26 @@ def _capture_main() -> int:
             evidence["screenshots"]["phase-planets-manifest"] = str(path.relative_to(ROOT))
 
             for tier in ("high", "low"):
-                page.evaluate(f"() => localStorage.setItem('rf-quality', '{tier}')")
-                page.goto(f"{ui}/?boot=skip", wait_until="domcontentloaded", timeout=120000)
-                page.get_by_test_id("enter-mission-control").click(force=True)
-                page.wait_for_selector('[data-entry-phase="mission_control"]', state="attached", timeout=45000)
+                tier_page = ctx.new_page()
+                tier_page.add_init_script("sessionStorage.clear();")
+                tier_page.goto(f"{ui}/?boot=skip", wait_until="domcontentloaded", timeout=120000)
+                tier_page.evaluate(f"() => localStorage.setItem('rf-quality', '{tier}')")
+                tier_page.wait_for_selector(
+                    '[data-testid="enter-mission-control"]', state="attached", timeout=60000,
+                )
+                tier_page.get_by_test_id("enter-mission-control").click(force=True)
+                tier_page.wait_for_selector(
+                    '[data-entry-phase="summoning"]', state="attached", timeout=20000,
+                )
+                tier_page.wait_for_selector(
+                    '[data-entry-phase="mission_control"]', state="attached", timeout=60000,
+                )
+                page = tier_page
                 page.wait_for_timeout(800)
-                post_fx = page.locator("[data-post-fx]").first.get_attribute("data-post-fx")
-                dpr = page.locator("[data-dpr-max]").first.get_attribute("data-dpr-max")
+                post_fx = tier_page.locator("[data-post-fx]").first.get_attribute("data-post-fx")
+                dpr = tier_page.locator("[data-dpr-max]").first.get_attribute("data-dpr-max")
                 evidence["metrics"][f"quality_{tier}"] = {"post_fx": post_fx, "dpr_max": dpr}
+                tier_page.close()
 
             browser.close()
 

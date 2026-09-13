@@ -3,6 +3,9 @@
 declare global {
   interface Window {
     __RF_RESET_SUMMON_CAPTURE__?: () => void;
+    /** Evidence capture — hold greeting in speaking until released. */
+    __RF_CAPTURE_SPEAKING_HOLD__?: boolean;
+    __RF_RELEASE_SPEAKING_HOLD__?: () => void;
   }
 }
 
@@ -299,8 +302,18 @@ export function WorldView() {
       const line = 'RedForge online. All systems nominal. Ready to enter Mission Control?';
       setHeroCaption(line);
       if (voiceOn && !privacyMuted) {
-        void speakViaGateway(line).finally(() => {
+        const finishGreeting = () => {
           setPhase((cur) => transitionEntry(cur, 'greeting_done', buildCtx()));
+        };
+        if (typeof window !== 'undefined') {
+          window.__RF_RELEASE_SPEAKING_HOLD__ = () => {
+            window.__RF_CAPTURE_SPEAKING_HOLD__ = false;
+            finishGreeting();
+          };
+        }
+        void speakViaGateway(line).finally(() => {
+          if (typeof window !== 'undefined' && window.__RF_CAPTURE_SPEAKING_HOLD__) return;
+          finishGreeting();
         });
         return 'speaking';
       }

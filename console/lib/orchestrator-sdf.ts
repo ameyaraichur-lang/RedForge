@@ -13,9 +13,9 @@ export const NECK_BASE_RX = 0.29;
 export const DELTOID_RX = 2.3;
 export const CHEST_BOTTOM = -2.45;
 /** Skip degenerate ring slices below this radius (prevents crown spike). */
-export const MIN_SLICE_RADIUS = 0.08;
+export const MIN_SLICE_RADIUS = 0.1;
 /** Do not emit rim/rings above this fraction of head height (crown degeneracy). */
-export const CROWN_SLICE_U = 0.74;
+export const CROWN_SLICE_U = 0.64;
 
 export type V3 = { x: number; y: number; z: number };
 
@@ -108,13 +108,19 @@ function sdNeck(p: V3): number {
   return sdCapsule(p, bot, top, r);
 }
 
-/** Central chest/thorax — bridges neck base to both deltoids (one continuous bust). */
+/** Central chest/thorax — one connected span from neck base to deltoids. */
 function sdChest(p: V3): number {
   if (p.y > NECK_BOTTOM - 0.06) return 999;
-  const neckBridge = sdEllipsoid(p, { x: 0, y: -1.68, z: 0.1 }, { x: 0.48, y: 0.2, z: 0.3 });
-  const upper = sdEllipsoid(p, { x: 0, y: -1.84, z: 0.15 }, { x: 2.14, y: 0.78, z: 0.58 });
-  const lower = sdEllipsoid(p, { x: 0, y: -2.08, z: 0.12 }, { x: 2.42, y: 0.58, z: 0.5 });
-  return smin(smin(neckBridge, upper, 0.36), lower, 0.4);
+  const neckBridge = sdEllipsoid(p, { x: 0, y: -1.66, z: 0.1 }, { x: 0.56, y: 0.24, z: 0.34 });
+  const upperChest = sdEllipsoid(p, { x: 0, y: -1.78, z: 0.14 }, { x: 1.68, y: 0.62, z: 0.54 });
+  const midFill = sdEllipsoid(p, { x: 0, y: -1.92, z: 0.16 }, { x: 2.28, y: 0.72, z: 0.58 });
+  const lower = sdEllipsoid(p, { x: 0, y: -2.12, z: 0.13 }, { x: 2.48, y: 0.62, z: 0.52 });
+  const sternumPad = sdEllipsoid(p, { x: 0, y: -1.84, z: 0.22 }, { x: 0.38, y: 0.48, z: 0.22 });
+  return smin(
+    smin(smin(smin(neckBridge, upperChest, 0.38), midFill, 0.4), lower, 0.42),
+    sternumPad,
+    0.28,
+  );
 }
 
 /** Signed distance to the full bust (negative = inside). */
@@ -214,6 +220,8 @@ export function surfacePointAt(y: number, theta: number): { p: V3; n: V3 } | nul
   const r = (lo + hi) * 0.5;
   if (r < MIN_SLICE_RADIUS) return null;
   const p = { x: Math.cos(theta) * r, y, z: Math.sin(theta) * r };
+  if (Math.abs(p.z) < 0.02 && r < MIN_SLICE_RADIUS * 1.8) return null;
+  if (Math.abs(p.x) < 0.14 && y > CHIN_Y + 0.48 * HEAD_H) return null;
   return { p, n: sdfGradient(p) };
 }
 

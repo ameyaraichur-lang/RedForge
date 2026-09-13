@@ -34,21 +34,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { assemblyConvergence, type GpuAssemblyState } from '@/lib/assembly-convergence';
-import {
-  CHEST_BOTTOM,
-  CHIN_Y,
-  CROWN_Y,
-  HEAD_H,
-  HEAD_RX,
-  MIN_SLICE_RADIUS,
-  NECK_BOTTOM,
-  frontHalfWidth,
-  frontSurfaceZ,
-  isCrownSlice,
-  rimWeightFromNormal,
-  sliceMaxRadius,
-  surfacePointAt,
-} from '@/lib/orchestrator-sdf';
+import { BUST_LANDMARKS, bustRings } from '@/lib/bust-rings.generated';
+import { CROWN_Y } from '@/lib/orchestrator-sdf';
 import type { WorldTheme } from '@/lib/world-theme';
 import { SignalRings } from '@/components/world/signal-rings';
 
@@ -71,394 +58,263 @@ type Pt = {
 
 const RIM_FADE_HEIGHT = 0.25;
 
-/** Broad amber wash — semi-axes 0.67 × 0.60 centred (0, 0.09). */
-function warmWeight(x: number, y: number): number {
-  const u = x / 0.67;
-  const v = (y - 0.09) / 0.6;
-  const d = Math.sqrt(u * u + v * v);
-  if (d >= 1) return 0;
-  return Math.pow(1 - d, 1.05);
-}
-
-/** Modest hot core — semi-axes 0.42 × 0.28 with wavy offset. */
-function hotCoreWeight(x: number, y: number): number {
-  const wave = Math.sin(x * 8.5 + y * 10.2) * 0.06;
-  const u = x / 0.42;
-  const v = (y - 0.09 + wave) / 0.28;
-  const d = Math.sqrt(u * u + v * v);
-  if (d >= 1) return 0;
-  return Math.pow(1 - d, 1.35);
-}
+/**
+ * Horizontal contour rings sliced offline from a real head/bust scan
+ * (scripts/sample_bust_rings.mjs). Anatomy — cranium dome, brow, nose, jaw
+ * line, neck taper, deltoid flare — comes from the scan rather than from
+ * hand-fitted radius curves, which is what the reference grammar needs: the
+ * rings ARE the visual language, so slicing a real surface gives both the
+ * silhouette and the striation for free.
+ */
+const RINGS = bustRings();
 
 function rnd(seed: number): number {
   const s = Math.sin(seed * 127.1 + 311.7) * 43758.5453;
   return s - Math.floor(s);
 }
 
+type RingVert = {
+  x: number;
+  z: number;
+  /** Camera-facing component of the outward normal, -1 (back) … +1 (front). */
+  frontness: number;
+  /** Silhouette emphasis: peaks where the surface turns away sideways. */
+  rim: number;
+};
+
+/** Outward xz normals and rim weights derived from each loop's tangent. */
+function ringVerts(verts: Array<[number, number]>): RingVert[] {
+  const n = verts.length;
+  return verts.map(([x, z], i) => {
+    const prev = verts[(i - 1 + n) % n];
+    const next = verts[(i + 1) % n];
+    let tx = next[0] - prev[0];
+    let tz = next[1] - prev[1];
+    const len = Math.hypot(tx, tz) || 1;
+    tx /= len;
+    tz /= len;
+    // Rotate the tangent into a normal, then flip it to point away from the axis.
+    let nx = tz;
+    let nz = -tx;
+    if (nx * x + nz * z < 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    return { x, z, frontness: nz, rim: Math.pow(1 - Math.abs(nz), 1.4) };
+  });
+}
+
+const RING_VERTS = RINGS.map((r) => ringVerts(r.verts));
+
+const FACE_CENTRE_Y = (BUST_LANDMARKS.browY + BUST_LANDMARKS.chinY) / 2;
+const FACE_RY = ((BUST_LANDMARKS.browY - BUST_LANDMARKS.chinY) / 2) * 1.32;
+const FACE_RX = BUST_LANDMARKS.headHalfWidth * 0.78;
+
+/**
+ * Amber wash over the face. Gated on how strongly the surface faces the camera
+ * so the warm tint lands on the face plane instead of wrapping the skull sides.
+ */
+function warmWeight(x: number, y: number, frontness = 1): number {
+  const u = x / FACE_RX;
+  const v = (y - FACE_CENTRE_Y) / FACE_RY;
+  const d = Math.hypot(u, v);
+  if (d >= 1) return 0;
+  // Broad plateau with the ramp confined to the outer band. A falloff that
+  // starts at the centre leaves most of the face only partly amber, which lets
+  // the cool rings mix back in and turns the face magenta.
+  const radial = smoothstep(1, 0.7, d);
+  // Gate on facing as a near-binary: the oval already bounds the face, so a
+  // gradual frontness term would dim the cheeks a second time.
+  const facing = smoothstep(-0.12, 0.34, frontness);
+  return radial * facing;
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Wavy hot centre sitting inside the amber face. */
+function hotCoreWeight(x: number, y: number, frontness = 1): number {
+  const wave = Math.sin(x * 8.5 + y * 10.2) * 0.05;
+  const u = x / (FACE_RX * 0.62);
+  const v = (y - FACE_CENTRE_Y + wave) / (FACE_RY * 0.58);
+  const d = Math.hypot(u, v);
+  if (d >= 1) return 0;
+  return Math.pow(1 - d, 1.3) * smoothstep(-0.12, 0.34, frontness);
+}
+
+/** Front surface z at a point, looked up from the nearest contour ring. */
+function ringFrontZ(y: number, x: number): number {
+  let best = -1;
+  let bestDy = Infinity;
+  for (let i = 0; i < RINGS.length; i++) {
+    const dy = Math.abs(RINGS[i].y - y);
+    if (dy < bestDy) {
+      bestDy = dy;
+      best = i;
+    }
+  }
+  if (best < 0) return 0;
+  let z = 0;
+  let found = false;
+  for (const [vx, vz] of RINGS[best].verts) {
+    if (Math.abs(vx - x) > 0.09 || vz <= 0) continue;
+    if (!found || vz > z) {
+      z = vz;
+      found = true;
+    }
+  }
+  return found ? z : 0;
+}
+
 function sampleBust(): Pt[] {
   const pts: Pt[] = [];
-  let band = 0;
+  const { crownY, chestBottom } = BUST_LANDMARKS;
 
-  // A. Ridge rings — horizontal slices rooted on the SDF zero level set.
-  const SLICES = 58;
-  for (let i = 0; i <= SLICES; i++) {
-    // Ridge rings on head + neck only — torso structure comes from chest arcs.
-    const y = NECK_BOTTOM - 0.04 + ((i + 0.5) / (SLICES + 1)) * (CROWN_Y - NECK_BOTTOM + 0.04);
-    const bound = sliceMaxRadius(y);
-    if (isCrownSlice(y) || bound < MIN_SLICE_RADIUS || frontHalfWidth(y) < MIN_SLICE_RADIUS) continue;
-    const count = Math.max(36, Math.round(200 * (bound / HEAD_RX) + 28));
-    const pri = y > 0.3 ? 0.02 + (CROWN_Y - y) * 0.05 : 0.12 + (0.3 - y) * 0.16;
+  // A. Ridge rings — the striated shell, straight off the sliced surface.
+  RINGS.forEach((ring, ri) => {
+    const vs = RING_VERTS[ri];
+    if (vs.length < 8) return;
+
+    const rimFade =
+      ring.y >= chestBottom + RIM_FADE_HEIGHT
+        ? 1
+        : Math.max(0, (ring.y - chestBottom) / RIM_FADE_HEIGHT);
+    if (rimFade < 0.04) return;
+
+    // Assembly order runs crown-first, chest-last.
+    const depth = Math.min(1, Math.max(0, (crownY - ring.y) / (crownY - chestBottom)));
+    const pri = 0.02 + depth * 0.84;
+
+    const onHead = ring.zone <= 2;
+    const density = onHead ? 150 : 104;
+    const count = Math.max(30, Math.round(ring.perimeter * density));
+
     for (let k = 0; k < count; k++) {
-      const theta = (k / count) * Math.PI * 2 + rnd(i * 31.7 + k) * 0.035;
-      const hit = surfacePointAt(y, theta);
-      if (!hit) continue;
-      const { p, n } = hit;
-      const rim = rimWeightFromNormal(n);
-      const ww = warmWeight(p.x, p.y);
-      if (ww > 0.04) continue;
-      const warm = 0;
+      const t = (k / count) * vs.length;
+      const i0 = Math.floor(t) % vs.length;
+      const i1 = (i0 + 1) % vs.length;
+      const f = t - Math.floor(t);
+      const a = vs[i0];
+      const b = vs[i1];
+      const x = a.x + (b.x - a.x) * f;
+      const z = a.z + (b.z - a.z) * f;
+      const frontness = a.frontness + (b.frontness - a.frontness) * f;
+      const rimW = a.rim + (b.rim - a.rim) * f;
+
+      // Front shell only. Additive points carry no depth occlusion, so cool
+      // grains on the back of the skull would shine straight through the face
+      // and mix blue into the amber. Keep a sparse fringe just past the
+      // silhouette so the edge still has thickness.
+      if (frontness < -0.32) continue;
+      if (frontness < 0 && rnd(ri * 7.7 + k * 1.3) > 0.16) continue;
+
+      const ww = warmWeight(x, ring.y, frontness);
+      const hot = hotCoreWeight(x, ring.y, frontness);
+      // Ramp warmth up from the oval edge so the shader can cross-fade cool to
+      // amber instead of stepping at the boundary, but keep the body of the
+      // face decisively amber.
+      const warm = ww > 0.02 ? Math.min(0.98, 0.3 + ww * 0.68 + hot * 0.28) : 0;
+
       pts.push({
-        x: p.x + (rnd(i * 3.3 + k) - 0.5) * 0.007,
-        y: p.y,
-        z: p.z,
+        x: x + (rnd(ri * 3.3 + k) - 0.5) * 0.006,
+        y: ring.y + (rnd(ri * 5.1 + k) - 0.5) * 0.005,
+        z,
         zone: 'shell',
-        rim,
+        // Warm face grains stay flat; cool grains carry the rim gradient.
+        rim: warm > 0.08 ? rimW * 0.16 : rimW * rimFade,
         warm,
-        size: 0.66 + rim * 0.38,
-        band,
+        // rimFade thins the grains toward the chest cut so the bottom edge
+        // dissolves instead of ending on a hard line.
+        size: (warm > 0.12 ? 0.78 + warm * 0.22 : 0.64 + rimW * 0.36) * (0.55 + rimFade * 0.45),
+        band: ri,
         priority: pri,
         channel: 0,
-        delay: pri * 0.2 + (k / count) * 0.05 + rnd(i + k * 7.3) * 0.05,
+        delay: pri * 0.2 + (k / count) * 0.05 + rnd(ri + k * 7.3) * 0.05,
       });
     }
-    band += 1;
-  }
+  });
 
-  // B. Silhouette rim — head/neck via lateral extrema; torso via continuous forward arc.
-  const RIM_STEPS = 760;
-  const rimFadeStart = CHEST_BOTTOM + RIM_FADE_HEIGHT;
-  for (let i = 0; i <= RIM_STEPS; i++) {
-    const y = CHEST_BOTTOM + (i / RIM_STEPS) * (CROWN_Y - CHEST_BOTTOM);
+  // B. Silhouette rim stroke — extra bright layers at each ring's lateral extrema.
+  RINGS.forEach((ring, ri) => {
+    const vs = RING_VERTS[ri];
+    if (vs.length < 8) return;
     const rimFade =
-      y >= rimFadeStart ? 1 : Math.max(0, (y - CHEST_BOTTOM) / RIM_FADE_HEIGHT);
-    if (rimFade < 0.04) continue;
-    const yBound = sliceMaxRadius(y);
-    if (isCrownSlice(y) || yBound < MIN_SLICE_RADIUS || frontHalfWidth(y) < MIN_SLICE_RADIUS) continue;
-    const pri = y > CHIN_Y ? 0.03 + (CROWN_Y - y) * 0.05 : 0.28 + (CHIN_Y - y) * 0.18;
-    const isTorso = y < NECK_BOTTOM - 0.08;
+      ring.y >= chestBottom + RIM_FADE_HEIGHT
+        ? 1
+        : Math.max(0, (ring.y - chestBottom) / RIM_FADE_HEIGHT);
+    if (rimFade < 0.04) return;
 
-    // Torso rim: forward-center arc only — lateral deltoid tips become detached wing loops.
-    const THETA_SAMPLES = isTorso ? 96 : 128;
-    const thetaStart = isTorso ? Math.PI * 0.22 : 0;
-    const thetaEnd = isTorso ? Math.PI * 0.78 : Math.PI;
-    for (let k = 0; k <= THETA_SAMPLES; k++) {
-      const theta = thetaStart + (k / THETA_SAMPLES) * (thetaEnd - thetaStart);
-      const hit = surfacePointAt(y, theta);
-      if (!hit || hit.p.z < -0.04) continue;
-      if (!isTorso && warmWeight(hit.p.x, hit.p.y) > 0.06) continue;
-      const rw = rimWeightFromNormal(hit.n);
-      const lateral = Math.abs(hit.p.x) / Math.max(yBound, 0.01);
-      if (isTorso && lateral > 0.72) continue;
-      const edgeFade = isTorso ? 1 - Math.pow(Math.max(0, lateral - 0.38) / 0.34, 1.8) : 1;
-      if (edgeFade < 0.15) continue;
-      const centerWeight = isTorso ? 1 - Math.pow(lateral, 2.2) : 0;
-      const layers = isTorso ? 2 + Math.round(centerWeight * 2) : 1;
+    const depth = Math.min(1, Math.max(0, (crownY - ring.y) / (crownY - chestBottom)));
+    const pri = 0.02 + depth * 0.84;
+
+    for (const side of [-1, 1]) {
+      // Lateral extremum on this side, front hemisphere only.
+      let pick: RingVert | null = null;
+      for (const v of vs) {
+        if (Math.sign(v.x) !== side || v.z < -0.05) continue;
+        if (!pick || Math.abs(v.x) > Math.abs(pick.x)) pick = v;
+      }
+      if (!pick) continue;
+      if (warmWeight(pick.x, ring.y, pick.frontness) > 0.06) continue;
+
+      const layers = 3;
       for (let j = 0; j < layers; j++) {
         pts.push({
-          x: hit.p.x + (rnd(i * 17.3 + k + j) - 0.5) * 0.01,
-          y: hit.p.y + (rnd(i * 3.1 + k + j) - 0.5) * 0.007,
-          z: hit.p.z + (rnd(i * 9.7 + k + j) - 0.5) * 0.014,
+          x: pick.x + (rnd(ri * 17.3 + j) - 0.5) * 0.009,
+          y: ring.y + (rnd(ri * 3.1 + j) - 0.5) * 0.007,
+          z: pick.z + (rnd(ri * 9.7 + j) - 0.5) * 0.012,
           zone: 'shell',
-          rim: rimFade * edgeFade * (isTorso ? 0.78 + centerWeight * 0.18 : Math.max(0.82, rw)),
+          rim: Math.max(0.82, pick.rim) * rimFade,
           warm: 0,
-          size: 0.94 * (0.72 + rimFade * 0.34 + centerWeight * 0.08),
-          band,
+          size: 0.94 * (0.74 + rimFade * 0.32),
+          band: ri,
           priority: pri,
           channel: 0,
-          delay: pri * 0.18 + rnd(i + k * 11.9 + j) * 0.05,
+          delay: pri * 0.18 + rnd(ri + j * 11.9) * 0.05,
         });
       }
     }
-  }
-  band += 1;
+  });
 
-  // B2. Torso fill — front-surface grains bridging neck to deltoids (continuous shoulders).
-  for (let i = 0; i <= 36; i++) {
-    const y = NECK_BOTTOM - 0.04 - (i / 36) * 0.82;
-    const bound = sliceMaxRadius(y);
-    if (bound < 0.22) continue;
-    for (let k = 0; k <= 48; k++) {
-      const x = (-0.92 + (1.84 * k) / 48) * bound * 0.94;
-      const z = frontSurfaceZ(y, x);
-      if (z < 0.02) continue;
-      if (rnd(i * 9.1 + k * 4.3) > 0.015) continue;
+  let band = RINGS.length + 1;
+
+  // C. Face hot core — a modest striated centre riding the same ring surface.
+  RINGS.forEach((ring, ri) => {
+    if (ring.zone !== 1) return;
+    const vs = RING_VERTS[ri];
+    const count = Math.max(10, Math.round(ring.perimeter * 42));
+    for (let k = 0; k < count; k++) {
+      const t = (k / count) * vs.length;
+      const i0 = Math.floor(t) % vs.length;
+      const i1 = (i0 + 1) % vs.length;
+      const f = t - Math.floor(t);
+      const a = vs[i0];
+      const b = vs[i1];
+      const x = a.x + (b.x - a.x) * f;
+      const z = a.z + (b.z - a.z) * f;
+      const frontness = a.frontness + (b.frontness - a.frontness) * f;
+      const hot = hotCoreWeight(x, ring.y, frontness);
+      if (hot < 0.5) continue;
       pts.push({
-        x,
-        y: y + (rnd(i + k) - 0.5) * 0.012,
-        z: z * 0.94,
-        zone: 'shell',
-        rim: 0.06,
-        warm: 0,
-        size: 0.68,
-        band,
-        priority: 0.3 + (i / 28) * 0.2,
-        channel: 0,
-        delay: 0.2 + (i / 28) * 0.25 + rnd(k * 2.1) * 0.04,
-      });
-    }
-  }
-  band += 1;
-
-  // B2c. Upper-shoulder bridge — uniform fill across deltoid slope (no edge-bright wing loops).
-  for (let i = 0; i <= 28; i++) {
-    const y = NECK_BOTTOM - 0.12 - (i / 28) * 0.66;
-    const bound = sliceMaxRadius(y);
-    if (bound < 0.28) continue;
-    for (let k = 0; k <= 72; k++) {
-      const x = (-bound + (2 * bound * k) / 72) * 0.96;
-      const z = frontSurfaceZ(y, x);
-      if (z < 0.012) continue;
-      if (rnd(i * 6.7 + k * 2.9) > 0.008) continue;
-      pts.push({
-        x,
-        y: y + (rnd(i + k) - 0.5) * 0.01,
-        z: z * 0.97,
-        zone: 'shell',
-        rim: 0.14,
-        warm: 0,
-        size: 0.74,
-        band,
-        priority: 0.28 + (i / 28) * 0.18,
-        channel: 0,
-        delay: 0.24 + (i / 28) * 0.2 + rnd(k) * 0.04,
-      });
-    }
-  }
-  band += 1;
-
-  // B2b. Trapezius straps — capsule bridge from neck base to deltoids.
-  const strap = (x0: number, y0: number, x1: number, y1: number, steps: number, seed: number) => {
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const x = x0 + (x1 - x0) * t + Math.sin(t * 5 + seed) * 0.018;
-      const y = y0 + (y1 - y0) * t;
-      const z = frontSurfaceZ(y, x);
-      if (z < 0.01) continue;
-      pts.push({
-        x,
-        y: y + (rnd(i * 3.1 + seed) - 0.5) * 0.01,
-        z: z * 0.96,
-        zone: 'shell',
-        rim: 0.22 + t * 0.18,
-        warm: 0,
-        size: 0.74,
-        band,
-        priority: 0.32 + t * 0.12,
-        channel: 0,
-        delay: 0.22 + t * 0.18 + rnd(i * 5.3 + seed) * 0.04,
-      });
-    }
-  };
-  strap(-0.28, NECK_BOTTOM + 0.02, -1.22, -1.94, 52, 8.2);
-  strap(0.28, NECK_BOTTOM + 0.02, 1.22, -1.94, 52, 9.4);
-  band += 1;
-
-  // B3. Cheek-band cyan shell — dense, bloom-resistant for speaking shell/core separation.
-  const cheekY = CHIN_Y + 0.55 * HEAD_H;
-  for (let side = -1; side <= 1; side += 2) {
-    for (let k = 0; k < 220; k++) {
-      const x = side * (0.38 + (k / 219) * 0.54);
-      const y = cheekY + (rnd(k * 13.7 + side) - 0.5) * 0.08;
-      const z = frontSurfaceZ(y, x);
-      if (z < 0.02) continue;
-      pts.push({
-        x,
-        y,
-        z: z * 0.99,
-        zone: 'shell',
-        rim: 0.08,
-        warm: 0,
-        size: 1.08,
-        band,
-        priority: 0.12,
-        channel: 1,
-        delay: 0.1 + rnd(k * 2.3 + side) * 0.06,
-      });
-    }
-  }
-  band += 1;
-
-  // B3b. Shoulder-flank cyan shell — lateral bands only (|x| > 0.46), for speaking separation.
-  for (let row = 0; row <= 20; row++) {
-    const y = 0.22 + (row / 20) * 0.32;
-    for (let side = -1; side <= 1; side += 2) {
-      for (let k = 0; k < 88; k++) {
-        const x = side * (0.46 + (k / 87) * 0.44);
-        const z = frontSurfaceZ(y, x);
-        if (z < 0.01) continue;
-        pts.push({
-          x,
-          y: y + (rnd(row * 5.1 + k + side) - 0.5) * 0.014,
-          z: z * 0.98,
-          zone: 'shell',
-          rim: 0.04,
-          warm: 0,
-          size: 1.02,
-          band,
-          priority: 0.1,
-          channel: 1,
-          delay: 0.08 + rnd(row * 3.7 + k + side) * 0.05,
-        });
-      }
-    }
-  }
-  band += 1;
-
-  // B4. Lateral cheek ridge shell — pure cyan on cheek slices for speaking separation.
-  const cheekRidgeY = CHIN_Y + 0.52 * HEAD_H;
-  for (let side = -1; side <= 1; side += 2) {
-    for (let k = 0; k < 56; k++) {
-      const theta = side < 0 ? Math.PI * (0.54 + (0.14 * k) / 55) : Math.PI * (0.46 - (0.14 * k) / 55);
-      const hit = surfacePointAt(cheekRidgeY, theta);
-      if (!hit || hit.p.z < 0.01) continue;
-      pts.push({
-        x: hit.p.x,
-        y: hit.p.y + (rnd(k * 7.1 + side) - 0.5) * 0.012,
-        z: hit.p.z,
-        zone: 'shell',
-        rim: 0.1,
-        warm: 0,
-        size: 1.05,
-        band,
-        priority: 0.11,
-        channel: 1,
-        delay: 0.09 + rnd(k * 3.3 + side) * 0.05,
-      });
-    }
-  }
-  band += 1;
-
-  // C. Chest arcs — concave-up rings bounded by the SDF silhouette.
-  const ARCS = 22;
-  const CHEST_ARC_SPAN = (Math.PI / 2) * 0.92;
-  for (let i = 0; i < ARCS; i++) {
-    const R = 0.34 + (i / (ARCS - 1)) * 2.08;
-    const count = Math.round(200 + R * 118);
-    const pri = 0.38 + (i / ARCS) * 0.38;
-    for (let k = 0; k <= count; k++) {
-      const aNorm = -1 + (2 * k) / count;
-      const a = aNorm * CHEST_ARC_SPAN;
-      const x = Math.sin(a) * R;
-      const y = NECK_BOTTOM - Math.cos(a) * R * 0.72;
-      if (y < CHEST_BOTTOM || y > NECK_BOTTOM) continue;
-      const bound = sliceMaxRadius(y);
-      if (Math.abs(x) > bound * 0.985) continue;
-      const lateral = Math.abs(aNorm);
-      const centerBias = Math.pow(1 - lateral, 0.85);
-      if (rnd(i * 5.3 + k * 2.1) > 0.004 + (1 - centerBias) * 0.04) continue;
-      const edge = Math.pow(Math.abs(x) / Math.max(bound, 0.01), 1.6);
-      pts.push({
-        x,
-        y: y + (rnd(i * 5.3 + k) - 0.5) * 0.014,
-        z: frontSurfaceZ(y, x) * 1.02,
-        zone: 'shell',
-        rim: 0.58 + edge * 0.38,
-        warm: 0,
-        size: 1.62 + edge * 0.48,
-        band,
-        priority: pri,
-        channel: 0,
-        delay: pri * 0.16 + lateral * 0.1 + rnd(i + k * 3.7) * 0.05,
-      });
-    }
-    band += 1;
-  }
-
-  // C2. Fine radial fan between the chest arcs.
-  for (let i = 0; i < 62; i++) {
-    const aNorm = -1 + (2 * i) / 61;
-    const a = aNorm * CHEST_ARC_SPAN * 0.98;
-    const centerBias = Math.pow(1 - Math.abs(aNorm), 0.8);
-    for (let k = 0; k < 42; k++) {
-      const R = 0.45 + (k / 41) * 2.0;
-      const x = Math.sin(a) * R;
-      const y = NECK_BOTTOM - Math.cos(a) * R * 0.72;
-      if (y < CHEST_BOTTOM || y > NECK_BOTTOM) continue;
-      const bound = sliceMaxRadius(y);
-      if (Math.abs(x) > bound * 0.96) continue;
-      if (rnd(i * 7.9 + k * 3.3) > 0.01 + (1 - centerBias) * 0.12) continue;
-      pts.push({
-        x,
-        y,
-        z: frontSurfaceZ(y, x) * 0.58,
-        zone: 'shell',
+        x: x + (rnd(ri * 7.1 + k) - 0.5) * 0.002,
+        y: ring.y + (rnd(ri * 5.3 + k) - 0.5) * 0.0015,
+        z: z * 1.01,
+        zone: 'core',
         rim: 0,
-        warm: 0,
-        size: 0.64,
-        band,
-        priority: 0.55 + (k / 37) * 0.3,
-        channel: 0,
-        delay: 0.4 + (k / 37) * 0.2 + rnd(i * 7.9 + k) * 0.06,
-      });
-    }
-  }
-  band += 1;
-
-  // D. Amber face fill — shell zone with warm-only shader path (no cyan underlay → no magenta).
-  for (let row = 0; row <= 42; row++) {
-    for (let k = 0; k <= 124; k++) {
-      const x = (-0.5 + k / 124) * 0.78;
-      const y = 0.09 + (-0.5 + row / 42) * 0.52;
-      const w = warmWeight(x, y);
-      if (w < 0.05) continue;
-      const hot = hotCoreWeight(x, y);
-      const z = frontSurfaceZ(y, x);
-      if (z <= 0.02) continue;
-      pts.push({
-        x: x + (rnd(row * 7.1 + k) - 0.5) * 0.005,
-        y: y + (rnd(row * 5.3 + k) - 0.5) * 0.004,
-        z: z * 1.06,
-        zone: 'shell',
-        rim: 0,
-        warm: Math.min(0.96, 0.42 + w * 0.48 + hot * 0.38),
-        size: 2.05 + w * 0.65 + hot * 0.35,
-        band,
-        priority: 0.05,
-        channel: 0,
-        delay: 0.03 + rnd(row * 11.3 + k) * 0.03,
-      });
-    }
-  }
-  band += 1;
-
-  // D2. Hot core overlay — normal-blended face pass for yellow-white centre.
-  for (let row = 0; row <= 28; row++) {
-    for (let k = 0; k <= 96; k++) {
-      const x = (-0.5 + k / 96) * 0.68;
-      const y = 0.09 + (-0.5 + row / 28) * 0.44;
-      const w = warmWeight(x, y);
-      const hot = hotCoreWeight(x, y);
-      if (hot < 0.12 || w < 0.2) continue;
-      const z = frontSurfaceZ(y, x);
-      if (z <= 0.02) continue;
-      pts.push({
-        x,
-        y,
-        z: z * 1.08,
-        zone: 'face',
-        rim: 0,
-        warm: Math.min(0.95, 0.5 + hot * 0.45),
-        size: 1.35 + hot * 0.45,
+        warm: Math.min(0.96, 0.68 + hot * 0.26),
+        size: 0.58 + hot * 0.16,
         band,
         priority: 0.04,
         channel: 0,
-        delay: 0.02 + rnd(row * 9.3 + k) * 0.03,
+        delay: 0.02 + rnd(ri * 9.3 + k) * 0.03,
       });
     }
-  }
+  });
   band += 1;
 
-  // E. Branching amber neck filaments rising from the sternum spark.
+  // D. Branching amber neck filaments rising from the sternum spark.
   const filament = (x0: number, y0: number, x1: number, y1: number, steps: number, seed: number) => {
     for (let i = 0; i <= steps; i++) {
       const t = i / steps;
@@ -467,7 +323,7 @@ function sampleBust(): Pt[] {
       pts.push({
         x,
         y,
-        z: frontSurfaceZ(y, x) * 0.98,
+        z: ringFrontZ(y, x) * 0.98,
         zone: 'core',
         rim: 0,
         warm: 1,
@@ -479,21 +335,23 @@ function sampleBust(): Pt[] {
       });
     }
   };
-  filament(0, -1.82, 0, -1.28, 42, 1.1);
-  filament(0, -1.28, -0.2, -0.95, 36, 2.3);
-  filament(0, -1.28, 0.2, -0.95, 36, 3.7);
-  filament(-0.05, -1.52, -0.3, -1.12, 28, 4.9);
-  filament(0.05, -1.52, 0.3, -1.12, 28, 6.1);
+  const sternumY = BUST_LANDMARKS.shoulderY - 0.05;
+  const throatY = BUST_LANDMARKS.neckY - 0.1;
+  filament(0, sternumY, 0, throatY, 42, 1.1);
+  filament(0, throatY, -0.2, throatY + 0.32, 36, 2.3);
+  filament(0, throatY, 0.2, throatY + 0.32, 36, 3.7);
+  filament(-0.05, (sternumY + throatY) / 2, -0.3, throatY + 0.16, 28, 4.9);
+  filament(0.05, (sternumY + throatY) / 2, 0.3, throatY + 0.16, 28, 6.1);
   band += 1;
 
-  // E2. Sternum spark.
+  // E. Sternum spark.
   for (let k = 0; k < 90; k++) {
     const a = rnd(k * 4.1) * Math.PI * 2;
     const rr = Math.sqrt(rnd(k * 8.3)) * 0.085;
     pts.push({
       x: Math.cos(a) * rr,
-      y: -1.86 + Math.sin(a) * rr,
-      z: 0.34,
+      y: sternumY + Math.sin(a) * rr,
+      z: Math.max(0.2, ringFrontZ(sternumY, 0)) * 0.9,
       zone: 'core',
       rim: 0,
       warm: 1,
@@ -532,7 +390,7 @@ function sampleDriftParticles(): Float32Array {
       let px = Math.cos(a) * spread * rad;
       if (Math.abs(px) < 0.12) px = (px >= 0 ? 1 : -1) * (0.16 + rnd(i * 4.9) * 0.2);
       arr[i * 3] = px;
-      arr[i * 3 + 1] = CROWN_Y + 0.008 + h * 0.05;
+      arr[i * 3 + 1] = CROWN_Y + 0.006 + h * 0.032;
       arr[i * 3 + 2] = Math.sin(a) * spread * 0.55 * Math.sqrt(rnd(i * 11.7));
     } else {
       const t = rnd(i * 3.9);
@@ -598,8 +456,6 @@ uniform float uSizeScale;
 varying float vAlpha;
 varying float vRim;
 varying float vWarm;
-varying float vCheek;
-
 float easeOutCubic(float t) {
   return 1.0 - pow(1.0 - t, 3.0);
 }
@@ -625,7 +481,6 @@ void main() {
   vAlpha = mix(0.26, 0.92, e) * (0.98 + uListen * 0.12) * uFade;
   vRim = aRim * e;
   vWarm = aWarm * e;
-  vCheek = step(0.5, aChannel) * e;
 }
 `;
 
@@ -634,50 +489,36 @@ uniform vec3 uCool;
 uniform vec3 uRimCol;
 uniform vec3 uWarm;
 uniform vec3 uHot;
+uniform float uListen;
 varying float vAlpha;
 varying float vRim;
 varying float vWarm;
-varying float vCheek;
 void main() {
   vec2 uv = gl_PointCoord - 0.5;
   float d = length(uv);
   if (d > 0.5) discard;
   float grain = smoothstep(0.5, 0.05, d);
-  // Cheek-band shell — bloom-resistant cyan for speaking shell/core separation.
-  if (vCheek > 0.5) {
-    vec3 cy = vec3(0.0, 148.0, 228.0) / 255.0;
-    vec3 col = mix(cy, uRimCol, vRim * 0.08);
-    gl_FragColor = vec4(col * (1.35 + vRim * 0.15), grain * vAlpha);
-    return;
-  }
-  // Amber face tint — suppress cool shell where warm is high (additive blue+orange → pink).
-  float tAmber = vWarm < 0.02 ? 0.0 : smoothstep(0.08, 0.82, vWarm);
-  if (tAmber > 0.04) {
-    vec3 amber = mix(vec3(1.0, 0.45, 0.04), vec3(1.0, 0.88, 0.55), smoothstep(0.45, 0.92, vWarm));
-    float gain = 0.52 + tAmber * 0.1;
-    gl_FragColor = vec4(amber * gain, grain * vAlpha * 0.78);
-    return;
-  }
-  vec3 col = uCool;
-  col = mix(col, uRimCol, vRim * 0.45);
-  float gain = 0.62 + vRim * 0.34;
-  gl_FragColor = vec4(col * gain, grain * vAlpha);
-}
-`;
+  float tAmber = vWarm < 0.02 ? 0.0 : smoothstep(0.04, 0.72, vWarm);
+  float tHot = smoothstep(0.52, 0.92, vWarm);
+  float speaking = smoothstep(0.34, 0.48, uListen);
 
-const FACE_FRAG = /* glsl */ `
-varying float vAlpha;
-varying float vWarm;
-void main() {
-  vec2 uv = gl_PointCoord - 0.5;
-  float d = length(uv);
-  if (d > 0.5) discard;
-  float grain = smoothstep(0.5, 0.04, d);
-  float t = smoothstep(0.2, 0.88, vWarm);
-  vec3 amber = vec3(1.0, 0.55, 0.12);
-  vec3 hot = vec3(1.0, 0.91, 0.64);
-  vec3 col = mix(amber, hot, t);
-  gl_FragColor = vec4(col, grain * vAlpha);
+  vec3 darkAmber = mix(vec3(210.0, 92.0, 16.0), vec3(228.0, 82.0, 10.0), speaking) / 255.0;
+  vec3 amber = mix(vec3(238.0, 108.0, 18.0), vec3(252.0, 98.0, 12.0), speaking) / 255.0;
+  vec3 warmCol = mix(darkAmber, amber, tAmber);
+  warmCol += vec3(1.0, 0.42, 0.04) * tAmber * (0.1 - speaking * 0.04);
+  warmCol += vec3(1.0, 0.68, 0.22) * tHot * (0.06 - speaking * 0.04);
+  // Matched to the cool ring gain: the face has to actually read amber against
+  // the surrounding rings rather than sit under them.
+  float warmGain = min(0.82, mix(0.76, 0.7, speaking) + tHot * (0.06 - speaking * 0.02));
+
+  vec3 coolCol = mix(uCool, uRimCol, vRim * 0.45);
+  float coolGain = 0.62 + vRim * 0.34;
+
+  // Cross-fade rather than branch: a hard switch draws a visible seam around
+  // the face oval, which the reference does not have.
+  vec3 col = mix(coolCol * coolGain, warmCol * warmGain, tAmber);
+  float warmAlpha = mix(0.92, 0.86, speaking) * (1.0 - tHot * 0.06);
+  gl_FragColor = vec4(col, grain * vAlpha * mix(1.0, warmAlpha, tAmber));
 }
 `;
 
@@ -740,9 +581,15 @@ void main() {
   float d = length(uv);
   if (d > 0.5) discard;
   float grain = smoothstep(0.5, 0.02, d);
+  float eSpeak = min(uEnergy, 0.24);
   float pulse = vChannel > 0.5 ? 0.82 + 0.18 * sin(uTime * 3.2 + vWarm * 9.0) : 1.0;
-  vec3 col = mix(uWarm, uHot, smoothstep(0.62, 0.96, vWarm * (0.65 + uEnergy * 0.25)));
-  gl_FragColor = vec4(col * 0.48 * pulse, grain * vAlpha * vFlow * 0.65);
+  vec3 faceAmber = vec3(1.0, 0.52, 0.1);
+  vec3 col = vChannel > 0.5
+    ? mix(uWarm, uHot, smoothstep(0.62, 0.96, vWarm))
+    : mix(faceAmber, uHot, smoothstep(0.72, 0.96, vWarm * (0.55 + eSpeak * 0.12)));
+  float faceDim = vChannel > 0.5 ? 1.0 : (1.0 - eSpeak * 0.12);
+  float coreGain = vChannel > 0.5 ? 0.48 : 0.46 * faceDim;
+  gl_FragColor = vec4(col * coreGain * pulse, grain * vAlpha * vFlow * 0.52 * faceDim);
 }
 `;
 
@@ -822,7 +669,6 @@ export function OrchestratorHead({
 }) {
   const group = useRef<THREE.Group>(null);
   const shellMat = useRef<THREE.ShaderMaterial>(null);
-  const faceMat = useRef<THREE.ShaderMaterial>(null);
   const coreMat = useRef<THREE.ShaderMaterial>(null);
   const driftMat = useRef<THREE.ShaderMaterial>(null);
   const progressRef = useRef(formed ? 1 : 0);
@@ -887,7 +733,7 @@ export function OrchestratorHead({
     }
   }, [formed, assemblyActive]);
 
-  const { shellGeo, faceGeo, coreGeo, driftGeo } = useMemo(() => {
+  const { shellGeo, coreGeo, driftGeo } = useMemo(() => {
     const samples = sampleBust();
     const build = (pts: Pt[]) => {
       const n = pts.length;
@@ -930,7 +776,6 @@ export function OrchestratorHead({
     drift.setAttribute('position', new THREE.BufferAttribute(sampleDriftParticles(), 3));
     return {
       shellGeo: build(samples.filter((p) => p.zone === 'shell')),
-      faceGeo: build(samples.filter((p) => p.zone === 'face')),
       coreGeo: build(samples.filter((p) => p.zone === 'core')),
       driftGeo: drift,
     };
@@ -1013,7 +858,8 @@ export function OrchestratorHead({
         : interactionMode === 'speaking'
           ? 0.42 + audioEnergy * 0.12
           : 0;
-    const speak = interactionMode === 'speaking' ? Math.max(0.2, audioEnergy * 0.78) : 0;
+    const speak =
+      interactionMode === 'speaking' ? Math.min(0.24, Math.max(0.2, audioEnergy * 0.78)) : 0;
 
     const syncMat = (mat: THREE.ShaderMaterial | null, extra?: (u: THREE.ShaderMaterial['uniforms']) => void) => {
       if (!mat) return;
@@ -1024,7 +870,6 @@ export function OrchestratorHead({
       extra?.(mat.uniforms);
     };
     syncMat(shellMat.current, (u) => { u.uListen.value = listen; });
-    syncMat(faceMat.current);
     syncMat(coreMat.current, (u) => { u.uEnergy.value = speak; });
     syncMat(driftMat.current, (u) => { u.uFade.value = summonFade * 0.85; });
 
@@ -1095,18 +940,6 @@ export function OrchestratorHead({
           transparent
           depthWrite={false}
           blending={THREE.AdditiveBlending}
-        />
-      </points>
-      <points geometry={faceGeo} renderOrder={5}>
-        <shaderMaterial
-          ref={faceMat}
-          vertexShader={SHELL_VERT}
-          fragmentShader={FACE_FRAG}
-          uniforms={shellUniforms}
-          transparent
-          depthWrite={false}
-          depthTest={false}
-          blending={THREE.NormalBlending}
         />
       </points>
       <points geometry={coreGeo} renderOrder={2}>

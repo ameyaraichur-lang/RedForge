@@ -17,6 +17,10 @@ declare global {
     __RF_SUMMON_RESET__?: () => void;
     /** Atomic capture resync — hold, reset anchor to now, release hold. */
     __RF_SUMMON_ARM__?: () => void;
+    /** Live summon diagnostics for capture (not rAF-throttled). */
+    __RF_SUMMON_LIVE__?: () => ReturnType<typeof getSummonDiagnostics>;
+    /** Seek summon progress while held — deterministic capture frames. */
+    __RF_SUMMON_SEEK__?: (t: number) => void;
     __RF_SUMMON_DIAG__?: {
       anchorMs: number | null;
       elapsedMs: number;
@@ -64,6 +68,11 @@ export function startSummonAnchor(now = nowMs()): void {
   if (window.__RF_SUMMON_ANCHOR_MS__ == null) resetSummonAnchor(now);
 }
 
+function refreshSummonDiag(): void {
+  if (typeof window === 'undefined') return;
+  window.__RF_SUMMON_DIAG__ = getSummonDiagnostics();
+}
+
 export function setSummonHold(holding: boolean, now = nowMs()): void {
   if (typeof window === 'undefined') return;
   if (holding) {
@@ -77,6 +86,7 @@ export function setSummonHold(holding: boolean, now = nowMs()): void {
     window.__RF_SUMMON_HOLDING__ = false;
     window.__RF_SUMMON_HOLD_SINCE__ = undefined;
   }
+  refreshSummonDiag();
 }
 
 export function getSummonElapsedMs(now = nowMs()): number {
@@ -115,12 +125,28 @@ export function installSummonCaptureHooks(): void {
     if (window.__RF_SUMMON_ANCHOR_MS__ == null) return;
     resetSummonAnchor(undefined, { preserveHold: Boolean(window.__RF_SUMMON_HOLDING__) });
   };
-  /** Hold → reset anchor to now (elapsed=0) → release — for capture frame sync. */
+  /** Reset anchor to now and keep hold engaged — capture releases explicitly. */
   window.__RF_SUMMON_ARM__ = () => {
     const now = nowMs();
+    window.__RF_SUMMON_ANCHOR_MS__ = now;
+    window.__RF_SUMMON_HOLD_MS__ = 0;
     setSummonHold(true, now);
-    resetSummonAnchor(now, { preserveHold: true });
-    setSummonHold(false, now);
+  };
+  window.__RF_SUMMON_LIVE__ = () => getSummonDiagnostics();
+  window.__RF_SUMMON_SEEK__ = (t: number) => {
+    const anchor = window.__RF_SUMMON_ANCHOR_MS__;
+    if (anchor == null) return;
+    const clamped = Math.max(0, Math.min(1, t));
+    const elapsed = clamped * SUMMON_DURATION_MS;
+    const now = nowMs();
+    window.__RF_SUMMON_HOLD_MS__ = Math.max(0, now - anchor - elapsed);
+    window.__RF_SUMMON_HOLDING__ = true;
+    window.__RF_SUMMON_HOLD_SINCE__ = now;
+    refreshSummonDiag();
+    if (typeof document !== 'undefined') {
+      const root = document.querySelector<HTMLElement>('main[data-entry-phase]');
+      publishSummonDiagnostics(root, clamped, {});
+    }
   };
 }
 
