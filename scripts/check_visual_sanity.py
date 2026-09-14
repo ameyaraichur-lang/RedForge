@@ -56,17 +56,28 @@ def center_stats(img) -> dict:
 
 
 def shell_core_separation(img) -> dict:
-    """Spatial shell-vs-core check — warm face centre + cool cyan cheek/shoulder flanks."""
+    """Spatial shell-vs-core check — warm face centre + cool cyan cheek flanks.
+
+    Regions are anchored to the same band as face_amber_metrics. The earlier
+    bands sat well below and outside the face: the "face" band covered the neck
+    and chest, and the "cheek" bands fell outside the head entirely. That only
+    read as a pass while a warm halo bled across those areas, so a correctly
+    confined amber face scored near zero warmth while a halo that swamped the
+    shell scored well.
+    """
     w, h = img.size
     cx, cy = w // 2, h // 2
-    face = _region_stats(img.crop((cx - w // 10, cy - h // 10, cx + w // 10, cy + h // 14)))
-    # Cheek-level bands where ridge rings stay cyan even under speaking bloom.
+    # Brow-to-jaw band: the amber face oval sits here.
+    top, bottom = cy - h // 5, cy - h // 12
+    face = _region_stats(img.crop((cx - w // 12, top, cx + w // 12, bottom)))
+    # Narrow bands just outboard of the face oval but still on the head, where
+    # the ridge rings and ear nubs must stay cyan even while speaking.
     left = _region_stats(
-        img.crop((cx - w // 3, cy - h // 5, cx - w // 8, cy - h // 14)),
+        img.crop((cx - w // 7, top, cx - w // 11, bottom)),
         cyan_dominant=True,
     )
     right = _region_stats(
-        img.crop((cx + w // 8, cy - h // 5, cx + w // 3, cy - h // 14)),
+        img.crop((cx + w // 11, top, cx + w // 7, bottom)),
         cyan_dominant=True,
     )
     shell_cool = (left["cool_ratio"] + right["cool_ratio"]) / 2

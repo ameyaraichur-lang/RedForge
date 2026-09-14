@@ -27,6 +27,24 @@ from process_utils import (  # noqa: E402
 )
 
 
+# Mid-envelope voice energy for the speaking/listening stills. Live TTS energy
+# keeps moving after the phase is held and it drives how far the amber face
+# blooms over the cool shell, which made those stills non-reproducible: three
+# runs of identical code gave shell cool ratios of 0.09, 0.23 and 0.50.
+CAPTURE_VOICE_ENERGY = 0.42
+
+
+def pin_voice_energy(page, energy: float = CAPTURE_VOICE_ENERGY) -> None:
+    """Freeze voice energy so voice-state stills are reproducible."""
+    page.wait_for_function(
+        "() => typeof window.__RF_SET_CAPTURE_VOICE_ENERGY__ === 'function'",
+        timeout=30000,
+    )
+    page.evaluate("(e) => window.__RF_SET_CAPTURE_VOICE_ENERGY__(e)", energy)
+    # Let the pinned value propagate into the GPU uniforms before shooting.
+    page.wait_for_timeout(500)
+
+
 def read_assembly_progress(page) -> float:
     raw = page.locator("[data-assembly-visual-progress]").first.get_attribute("data-assembly-visual-progress")
     return float(raw or "0")
@@ -673,6 +691,7 @@ def _capture_main() -> int:
                 raise RuntimeError(f"speaking status must not mention mic: {speak_status!r}")
             if "tts" not in speak_status.lower():
                 raise RuntimeError(f"speaking status must show TTS: {speak_status!r}")
+            pin_voice_energy(page)
             path = OUT / "phase-speaking-normal.png"
             page.screenshot(path=str(path), full_page=False, timeout=90000)
             page.evaluate("() => window.__RF_RELEASE_SPEAKING_HOLD__?.()")
@@ -703,6 +722,7 @@ def _capture_main() -> int:
             evidence["metrics"]["listening_via"] = "ptt_simulated_stt"
             evidence["metrics"]["stt_adapter"] = "simulated"
             evidence["metrics"]["listening_status_line"] = listen_status
+            pin_voice_energy(page)
             path = OUT / "phase-listening-normal.png"
             page.screenshot(path=str(path), full_page=False, timeout=90000)
             evidence["screenshots"]["phase-listening-normal"] = str(path.relative_to(ROOT))

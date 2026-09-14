@@ -173,6 +173,56 @@ function ringFrontZ(y: number, x: number): number {
   return found ? z : 0;
 }
 
+/**
+ * Yaw the figure starts assembly at, in radians. The reference's form reads as
+ * a three-quarter profile while it is still dust and squares up to frontal as
+ * it resolves.
+ */
+const ASSEMBLY_YAW = -0.62;
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * Arrival order windows, in beat fraction. Mirrors the reference's formation
+ * grammar: a dust arc draws the silhouette first, the form then fills inward
+ * from that outline, the amber face wash arrives late and grows, and the small
+ * hot details land last.
+ */
+const ORDER = {
+  rim: [0.0, 0.3],
+  head: [0.2, 0.66],
+  neck: [0.5, 0.74],
+  torso: [0.58, 0.88],
+  face: [0.62, 0.9],
+  hot: [0.84, 0.94],
+  filament: [0.86, 0.97],
+  spark: [0.93, 1.0],
+} as const;
+
+function span(window: readonly [number, number], t: number): number {
+  const k = Math.min(1, Math.max(0, t));
+  return window[0] + (window[1] - window[0]) * k;
+}
+
+/** Vertical centre used for the silhouette sweep angle. */
+const SWEEP_CENTRE_Y = -0.3;
+/** Sweep starts at the lower left, matching where the reference's dust enters. */
+const SWEEP_START_THETA = -2.4;
+const TAU = Math.PI * 2;
+
+/**
+ * Position along the silhouette sweep, 0 at the lower left then clockwise up
+ * the left side, over the crown, down the right side.
+ */
+function sweepOrder(x: number, y: number): number {
+  const theta = Math.atan2(y - SWEEP_CENTRE_Y, x);
+  let s = (SWEEP_START_THETA - theta) % TAU;
+  if (s < 0) s += TAU;
+  return s / TAU;
+}
+
 function sampleBust(): Pt[] {
   const pts: Pt[] = [];
   const { crownY, chestBottom } = BUST_LANDMARKS;
@@ -188,10 +238,7 @@ function sampleBust(): Pt[] {
         : Math.max(0, (ring.y - chestBottom) / RIM_FADE_HEIGHT);
     if (rimFade < 0.04) return;
 
-    // Assembly order runs crown-first, chest-last.
     const depth = Math.min(1, Math.max(0, (crownY - ring.y) / (crownY - chestBottom)));
-    const pri = 0.02 + depth * 0.84;
-
     const onHead = ring.zone <= 2;
     const density = onHead ? 150 : 104;
     const count = Math.max(30, Math.round(ring.perimeter * density));
@@ -222,6 +269,20 @@ function sampleBust(): Pt[] {
       // face decisively amber.
       const warm = ww > 0.02 ? Math.min(0.98, 0.3 + ww * 0.68 + hot * 0.28) : 0;
 
+      // Fill inward from the outline: grains near the silhouette (high rim)
+      // land early, interior grains later. The amber face is held back to its
+      // own late window so it grows in rather than arriving with the shell.
+      let order: number;
+      if (warm > 0.08) {
+        order = span(ORDER.face, 1 - ww);
+      } else if (onHead) {
+        order = span(ORDER.head, 1 - rimW);
+      } else if (ring.zone === 3) {
+        order = span(ORDER.neck, 1 - rimW);
+      } else {
+        order = span(ORDER.torso, depth * 0.65 + (1 - rimW) * 0.35);
+      }
+
       pts.push({
         x: x + (rnd(ri * 3.3 + k) - 0.5) * 0.006,
         y: ring.y + (rnd(ri * 5.1 + k) - 0.5) * 0.005,
@@ -234,9 +295,9 @@ function sampleBust(): Pt[] {
         // dissolves instead of ending on a hard line.
         size: (warm > 0.12 ? 0.78 + warm * 0.22 : 0.64 + rimW * 0.36) * (0.55 + rimFade * 0.45),
         band: ri,
-        priority: pri,
+        priority: order,
         channel: 0,
-        delay: pri * 0.2 + (k / count) * 0.05 + rnd(ri + k * 7.3) * 0.05,
+        delay: rnd(ri + k * 7.3),
       });
     }
   });
@@ -251,9 +312,6 @@ function sampleBust(): Pt[] {
         : Math.max(0, (ring.y - chestBottom) / RIM_FADE_HEIGHT);
     if (rimFade < 0.04) return;
 
-    const depth = Math.min(1, Math.max(0, (crownY - ring.y) / (crownY - chestBottom)));
-    const pri = 0.02 + depth * 0.84;
-
     for (const side of [-1, 1]) {
       // Lateral extremum on this side, front hemisphere only.
       let pick: RingVert | null = null;
@@ -263,6 +321,11 @@ function sampleBust(): Pt[] {
       }
       if (!pick) continue;
       if (warmWeight(pick.x, ring.y, pick.frontness) > 0.06) continue;
+
+      // The outline is drawn as a sweep, not all at once: order follows the
+      // path from the lower left, up the left side, over the crown and down
+      // the right, which is how the reference's opening dust arc travels.
+      const order = span(ORDER.rim, sweepOrder(pick.x, ring.y));
 
       const layers = 3;
       for (let j = 0; j < layers; j++) {
@@ -275,9 +338,9 @@ function sampleBust(): Pt[] {
           warm: 0,
           size: 0.94 * (0.74 + rimFade * 0.32),
           band: ri,
-          priority: pri,
+          priority: order,
           channel: 0,
-          delay: pri * 0.18 + rnd(ri + j * 11.9) * 0.05,
+          delay: rnd(ri + j * 11.9),
         });
       }
     }
@@ -311,9 +374,10 @@ function sampleBust(): Pt[] {
         warm: Math.min(0.96, 0.68 + hot * 0.26),
         size: 0.58 + hot * 0.16,
         band,
-        priority: 0.04,
+        // Hottest centre lands last, so the face brightens as it resolves.
+        priority: span(ORDER.hot, 1 - hot),
         channel: 0,
-        delay: 0.02 + rnd(ri * 9.3 + k) * 0.03,
+        delay: rnd(ri * 9.3 + k),
       });
     }
   });
@@ -334,9 +398,10 @@ function sampleBust(): Pt[] {
         warm: 1,
         size: 0.66,
         band,
-        priority: 0.34 + t * 0.1,
+        // Filaments trace upward from the sternum, arriving near the end.
+        priority: span(ORDER.filament, t),
         channel: 1,
-        delay: 0.24 + t * 0.14 + rnd(i * 7.7 + seed) * 0.04,
+        delay: rnd(i * 7.7 + seed),
       });
     }
   };
@@ -362,9 +427,9 @@ function sampleBust(): Pt[] {
       warm: 1,
       size: 0.8,
       band,
-      priority: 0.3,
+      priority: span(ORDER.spark, rnd(k * 2.7)),
       channel: 2,
-      delay: 0.3 + rnd(k * 3.9) * 0.08,
+      delay: rnd(k * 3.9),
     });
   }
   band += 1;
@@ -407,37 +472,56 @@ function sampleDriftParticles(): Float32Array {
   return arr;
 }
 
-/**
- * Ribbon start positions: particles queue along a sweeping spiral ordered by
- * arrival time, so in-flight dust reads as the reference's comet ribbon and is
- * progressively consumed into the figure.
- */
-/** Cubic bezier point — comet ribbon sweeps from far-right tail into the bust. */
+/** Cubic bezier point — dust arc sweeps from a far lower-left tail into the bust. */
 function ribbonBezier(t: number): [number, number, number] {
   const u = 1 - t;
-  // Elongated comet tail: far upper-right → sweep down-left → hook into bust.
-  const p0: [number, number, number] = [9.8, 1.65, -1.75];
-  const p1: [number, number, number] = [7.2, 0.15, -1.62];
-  const p2: [number, number, number] = [3.8, -0.55, -1.48];
-  const p3: [number, number, number] = [0.15, 0.25, -1.28];
+  // The reference's opening dust enters low on the left and arcs up and right
+  // into the figure. The control points bow well above the chord so the tail
+  // reads as a sweeping hook rather than a straight run at the figure.
+  const p0: [number, number, number] = [-3.5, -2.2, -2.4];
+  const p1: [number, number, number] = [-3.7, 0.35, -2.0];
+  const p2: [number, number, number] = [-2.2, 1.75, -1.5];
+  const p3: [number, number, number] = [-0.35, 0.3, -1.28];
   const x = u ** 3 * p0[0] + 3 * u ** 2 * t * p1[0] + 3 * u * t ** 2 * p2[0] + t ** 3 * p3[0];
   const y = u ** 3 * p0[1] + 3 * u ** 2 * t * p1[1] + 3 * u * t ** 2 * p2[1] + t ** 3 * p3[1];
   const z = u ** 3 * p0[2] + 3 * u ** 2 * t * p1[2] + 3 * u * t ** 2 * p2[2] + t ** 3 * p3[2];
   return [x, y, z];
 }
 
+/**
+ * Start positions: structural grains queue along the entry arc in arrival
+ * order so the tail is consumed in the same sequence the figure builds, while
+ * the amber face and hot details bloom in place.
+ */
 function ribbonStartPositions(targets: Pt[]): Float32Array {
   const n = targets.length;
   const arr = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const p = targets[i];
-    const s = Math.min(1, Math.max(0, p.priority * 0.55 + p.delay * 0.45));
+
+    // The amber face and the hot details bloom outward in place in the
+    // reference, rather than arriving from off-frame. Flying them along the
+    // entry arc drew a bright orange smear across the left of the figure.
+    if (p.warm > 0.08 || p.zone === 'core') {
+      const halo = 0.26 + rnd(i * 2.9) * 0.34;
+      arr[i * 3] = p.x + (rnd(i * 1.7) - 0.5) * halo;
+      arr[i * 3 + 1] = p.y + (rnd(i * 4.3) - 0.5) * halo;
+      arr[i * 3 + 2] = p.z + 0.2 + rnd(i * 8.9) * halo;
+      continue;
+    }
+
+    // Queue position follows arrival order, so the tail is consumed in the
+    // same sequence the figure builds. Jitter stays small to keep the arc read.
+    const s = Math.min(1, Math.max(0, p.priority * 0.88 + p.delay * 0.12));
     // s≈0 near the bust, s≈1 at the far tail of the sweeping ribbon.
     const [bx, by, bz] = ribbonBezier(1 - s);
-    const spread = 0.035 + s * 0.14 * (1.05 - s * 0.35);
+    // Generous, roughly isotropic scatter: a tight tolerance collapses the
+    // tail into a hard beam, where the reference shows a loose dust cloud that
+    // thickens away from the figure.
+    const spread = 0.24 + s * 1.05;
     arr[i * 3] = bx + (rnd(i * 1.7) - 0.5) * spread;
-    arr[i * 3 + 1] = by + (rnd(i * 4.3) - 0.5) * spread * 0.42;
-    arr[i * 3 + 2] = bz + (rnd(i * 8.9) - 0.5) * spread * 0.38;
+    arr[i * 3 + 1] = by + (rnd(i * 4.3) - 0.5) * spread * 0.85;
+    arr[i * 3 + 2] = bz + (rnd(i * 8.9) - 0.5) * spread * 0.7;
   }
   return arr;
 }
@@ -461,15 +545,28 @@ uniform float uSizeScale;
 varying float vAlpha;
 varying float vRim;
 varying float vWarm;
+varying float vEmerge;
+/** Per-particle flight time as a fraction of the assembly beat. */
+#define SHELL_FLIGHT 0.34
 float easeOutCubic(float t) {
   return 1.0 - pow(1.0 - t, 3.0);
 }
 
 void main() {
-  float lead = clamp((uProgress - aPriority * 0.10) / 0.75, 0.0, 1.0);
-  float w = 0.52;
-  float slot = clamp((lead - aDelay * (1.0 - w)) / w, 0.0, 1.0);
-  float e = easeOutCubic(slot);
+  // aPriority is an explicit arrival order in 0..1 spanning the whole beat, so
+  // the figure keeps gaining material until progress 1.0. The previous curve
+  // gave the stagger only ~0.16 of the range, which packed every arrival into
+  // an early window and left the back half of the beat visually static.
+  float stagger = clamp(aPriority + (aDelay - 0.5) * 0.09, 0.0, 1.0);
+  float slot = clamp((uProgress - stagger * (1.0 - SHELL_FLIGHT)) / SHELL_FLIGHT, 0.0, 1.0);
+  // Smoothstep rather than ease-out: ease-out covers most of the distance in
+  // the first third of the flight, which made the figure look finished long
+  // before the beat ended. The reference keeps its dust visibly travelling.
+  float e = slot * slot * (3.0 - 2.0 * slot);
+  // Particles are queued along the entry arc, so without a birth fade the
+  // entire unstarted queue is on screen from the first frame as a dense
+  // cloud. The reference opens on a thin scattering that grows.
+  float birth = smoothstep(0.0, 0.09, slot);
   vec3 dir = aTarget - aStart;
   vec3 sweep = cross(normalize(dir + vec3(0.0, 0.001, 0.0)), vec3(0.0, 1.0, 0.0));
   vec3 ctrl = mix(aStart, aTarget, 0.5) + sweep * (1.5 * (fract(aDelay * 4.7) - 0.5));
@@ -482,10 +579,16 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mv;
   // Fine dust in flight, settling into crisp structural grains.
-  gl_PointSize = aSize * mix(0.6, 1.0, e) * uPixelRatio * (uSizeScale / -mv.z);
-  vAlpha = mix(0.26, 0.92, e) * (0.98 + uListen * 0.12) * uFade;
+  // Dust motes read slightly softer and wider in flight, tightening into
+  // crisp structural grains as they land. Shrinking them in flight made the
+  // opening beat almost invisible at this viewport size.
+  gl_PointSize = aSize * mix(1.12, 1.0, e) * uPixelRatio * (uSizeScale / -mv.z);
+  // In-flight dust is nearly as bright as settled structure in the reference;
+  // a low floor here left the opening beat reading as dim navy smoke.
+  vAlpha = birth * mix(0.52, 0.92, e) * (0.98 + uListen * 0.12) * uFade;
   vRim = aRim * e;
   vWarm = aWarm * e;
+  vEmerge = e;
 }
 `;
 
@@ -498,6 +601,7 @@ uniform float uListen;
 varying float vAlpha;
 varying float vRim;
 varying float vWarm;
+varying float vEmerge;
 void main() {
   vec2 uv = gl_PointCoord - 0.5;
   float d = length(uv);
@@ -517,7 +621,11 @@ void main() {
   float warmGain = min(0.82, mix(0.76, 0.7, speaking) + tHot * (0.06 - speaking * 0.02));
 
   vec3 coolCol = mix(uCool, uRimCol, vRim * 0.28);
-  float coolGain = 0.66 + vRim * 0.22;
+  // Under additive blending the on-screen value is colour x alpha x grain, so
+  // in-flight motes need a gain lift as well as alpha to read as the
+  // reference's bright cyan dust instead of dark navy.
+  float flight = 1.0 - vEmerge;
+  float coolGain = (0.66 + vRim * 0.22) * (1.0 + flight * 0.85);
 
   // Cross-fade rather than branch: a hard switch draws a visible seam around
   // the face oval, which the reference does not have.
@@ -547,15 +655,19 @@ varying float vWarm;
 varying float vChannel;
 varying float vFlow;
 
+/** Core details fly slightly quicker than the shell so they snap into place. */
+#define CORE_FLIGHT 0.28
 float easeOutCubic(float t) {
   return 1.0 - pow(1.0 - t, 3.0);
 }
 
 void main() {
-  float lead = clamp((uProgress - aPriority * 0.08) / 0.72, 0.0, 1.0);
-  float w = 0.50;
-  float slot = clamp((lead - aDelay * (1.0 - w)) / w, 0.0, 1.0);
+  float stagger = clamp(aPriority + (aDelay - 0.5) * 0.07, 0.0, 1.0);
+  float slot = clamp((uProgress - stagger * (1.0 - CORE_FLIGHT)) / CORE_FLIGHT, 0.0, 1.0);
   float e = easeOutCubic(slot);
+  // Core details bloom in place, so without a birth fade the amber halo is
+  // sitting on the face before the figure exists.
+  float birth = smoothstep(0.0, 0.12, slot);
   vec3 dir = aTarget - aStart;
   vec3 sweep = cross(normalize(dir + vec3(0.001, 0.0, 0.0)), vec3(0.0, 1.0, 0.0));
   vec3 ctrl = mix(aStart, aTarget, 0.52) + sweep * (1.1 * (fract(aDelay * 5.3) - 0.5));
@@ -565,7 +677,7 @@ void main() {
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
   gl_Position = projectionMatrix * mv;
   gl_PointSize = aSize * mix(0.55, 1.0, e) * uPixelRatio * (uSizeScale / -mv.z);
-  vAlpha = mix(0.32, 0.98, e) * uFade;
+  vAlpha = birth * mix(0.32, 0.98, e) * uFade;
   vWarm = aWarm;
   vChannel = aChannel;
   vFlow = e;
@@ -883,7 +995,13 @@ export function OrchestratorHead({
     syncMat(coreMat.current, (u) => { u.uEnergy.value = speak; });
     syncMat(driftMat.current, (u) => { u.uFade.value = summonFade * 0.85; });
 
-    if (group.current) group.current.rotation.y = Math.sin(t * 0.05) * 0.04;
+    if (group.current) {
+      // The reference resolves out of a three-quarter read into a square
+      // frontal pose as the figure finishes, then holds with a slow idle sway.
+      const settle = easeOutCubic(Math.min(1, Math.max(0, (progress - 0.12) / 0.74)));
+      const idle = Math.sin(t * 0.05) * 0.04;
+      group.current.rotation.y = ASSEMBLY_YAW * (1 - settle) + idle * settle;
+    }
 
     const pRounded = Math.round(progress * 1000) / 1000;
     if (pRounded !== lastReportRef.current) {

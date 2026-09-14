@@ -1,31 +1,46 @@
 /** Mirror shader lead/slot curves — used for onAssembled and E2E diagnostics. */
 
+/**
+ * Per-particle flight time as a fraction of the beat. Must match SHELL_FLIGHT
+ * and CORE_FLIGHT in orchestrator-head.tsx.
+ */
+const SHELL_FLIGHT = 0.34;
+const CORE_FLIGHT = 0.28;
+
+/**
+ * Arrival orders sampled across the ORDER windows in orchestrator-head.tsx:
+ * silhouette sweep first, fill inward, amber face late, hot details last.
+ */
 const SHELL_SAMPLES: Array<{ priority: number; delay: number }> = [
-  { priority: 0.02, delay: 0.05 },
-  { priority: 0.22, delay: 0.12 },
-  { priority: 0.42, delay: 0.18 },
-  { priority: 0.62, delay: 0.26 },
-  { priority: 0.82, delay: 0.34 },
+  { priority: 0.06, delay: 0.35 },
+  { priority: 0.26, delay: 0.62 },
+  { priority: 0.43, delay: 0.2 },
+  { priority: 0.6, delay: 0.78 },
+  { priority: 0.72, delay: 0.42 },
+  { priority: 0.82, delay: 0.15 },
+  { priority: 0.89, delay: 0.58 },
 ];
 
 const CORE_SAMPLES: Array<{ priority: number; delay: number }> = [
-  { priority: 0.02, delay: 0.05 },
-  { priority: 0.25, delay: 0.14 },
-  { priority: 0.45, delay: 0.21 },
-  { priority: 0.65, delay: 0.28 },
-  { priority: 0.82, delay: 0.35 },
+  { priority: 0.7, delay: 0.3 },
+  { priority: 0.8, delay: 0.55 },
+  { priority: 0.88, delay: 0.18 },
+  { priority: 0.93, delay: 0.7 },
+  { priority: 0.98, delay: 0.45 },
 ];
 
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v));
+}
+
 function shellSlot(progress: number, priority: number, delay: number): number {
-  const lead = Math.min(1, Math.max(0, (progress - priority * 0.1) / 0.75));
-  const w = 0.52;
-  return Math.min(1, Math.max(0, (lead - delay * (1 - w)) / w));
+  const stagger = clamp01(priority + (delay - 0.5) * 0.09);
+  return clamp01((progress - stagger * (1 - SHELL_FLIGHT)) / SHELL_FLIGHT);
 }
 
 function coreSlot(progress: number, priority: number, delay: number): number {
-  const lead = Math.min(1, Math.max(0, (progress - priority * 0.08) / 0.72));
-  const w = 0.5;
-  return Math.min(1, Math.max(0, (lead - delay * (1 - w)) / w));
+  const stagger = clamp01(priority + (delay - 0.5) * 0.07);
+  return clamp01((progress - stagger * (1 - CORE_FLIGHT)) / CORE_FLIGHT);
 }
 
 function meanSlot(
@@ -48,10 +63,10 @@ export function assemblyConvergence(progress: number): number {
 
 /** Progress where crown/face bands reach partial slot fill (~readable silhouette). */
 export function profileReadableProgress(): number {
-  for (let p = 0.28; p <= 0.45; p += 0.01) {
+  for (let p = 0.28; p <= 0.6; p += 0.01) {
     if (assemblyConvergence(p) >= 0.38) return Math.round(p * 100) / 100;
   }
-  return 0.36;
+  return 0.5;
 }
 
 export type GpuAssemblyState = {

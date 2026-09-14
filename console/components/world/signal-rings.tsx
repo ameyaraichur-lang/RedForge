@@ -5,7 +5,11 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { WorldTheme } from '@/lib/world-theme';
 
-/** One depth-separated ripple shell — XY-facing ring visible from hero camera. */
+/**
+ * One depth-separated ripple shell — XY-facing ring visible from hero camera.
+ * Rings are deliberately thin strokes: a wide annulus under additive blending
+ * fills as a disc rather than reading as a ripple.
+ */
 function ConcentricRipple({
   color,
   baseRadius,
@@ -106,9 +110,13 @@ export function SignalRings({
 
   if (interactive) {
     const e = Math.max(speaking ? 0.55 : 0.48, energy);
-    const inner = speaking ? '#ffc080' : '#7ee8ff';
-    const mid = speaking ? '#ff9a45' : '#52d4ff';
-    const outer = speaking ? '#ffe0b0' : '#3ec8e8';
+    // Both voice states ripple in cool light. Amber ripples read as a large
+    // additive disc that buries the cyan shell, and the reference keeps its
+    // ripples cool and thin in both states — speech is signalled by the face
+    // core going white-hot, not by a warm halo behind the head.
+    const inner = speaking ? '#9fe9ff' : '#7ee8ff';
+    const mid = speaking ? '#63d6ff' : '#52d4ff';
+    const outer = speaking ? '#4accf2' : '#3ec8e8';
     return (
       <group position={[0, 0.02, 0]}>
         <ConcentricRipple
@@ -117,13 +125,13 @@ export function SignalRings({
           expand={0.72}
           speed={speaking ? 0.48 : 0.26}
           phaseOffset={0}
-          opacityBase={0.72}
+          opacityBase={0.34}
           z={-4.2}
           y={0}
           energy={e}
           reducedMotion={reducedMotion}
-          inner={0.82}
-          outer={1.28}
+          inner={1.16}
+          outer={1.24}
         />
         <ConcentricRipple
           color={mid}
@@ -131,13 +139,13 @@ export function SignalRings({
           expand={0.78}
           speed={speaking ? 0.36 : 0.2}
           phaseOffset={0.33}
-          opacityBase={0.62}
+          opacityBase={0.29}
           z={-6.8}
           y={-0.06}
           energy={e}
           reducedMotion={reducedMotion}
-          inner={0.8}
-          outer={1.24}
+          inner={1.14}
+          outer={1.21}
         />
         <ConcentricRipple
           color={inner}
@@ -145,13 +153,13 @@ export function SignalRings({
           expand={0.84}
           speed={speaking ? 0.28 : 0.16}
           phaseOffset={0.66}
-          opacityBase={0.54}
+          opacityBase={0.24}
           z={-9.6}
           y={-0.1}
           energy={e}
           reducedMotion={reducedMotion}
-          inner={0.78}
-          outer={1.2}
+          inner={1.12}
+          outer={1.18}
         />
       </group>
     );

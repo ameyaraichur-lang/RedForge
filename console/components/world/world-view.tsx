@@ -6,6 +6,15 @@ declare global {
     /** Evidence capture — hold greeting in speaking until released. */
     __RF_CAPTURE_SPEAKING_HOLD__?: boolean;
     __RF_RELEASE_SPEAKING_HOLD__?: () => void;
+    /**
+     * Evidence capture — pin voice energy. Live TTS energy keeps moving after
+     * the phase is held, and it drives how far the amber face blooms over the
+     * cool shell, so an unpinned value makes the speaking/listening stills
+     * non-reproducible.
+     */
+    __RF_CAPTURE_VOICE_ENERGY__?: number;
+    /** Evidence capture — pin voice energy and apply it immediately. */
+    __RF_SET_CAPTURE_VOICE_ENERGY__?: (energy: number) => void;
   }
 }
 
@@ -125,9 +134,18 @@ export function WorldView() {
     setReducedMotion(window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     installSummonCaptureHooks();
     void fetchWorldManifest().then(setManifest).catch(() => {});
+    // Energy events stop arriving once TTS ends, so the harness also needs a
+    // direct setter to land a known value at screenshot time.
+    window.__RF_SET_CAPTURE_VOICE_ENERGY__ = (energy: number) => {
+      window.__RF_CAPTURE_VOICE_ENERGY__ = energy;
+      setAudioEnergy(energy);
+      operator.setSpeakingEnergy(energy);
+    };
     return onVoiceEnergy((s) => {
-      setAudioEnergy(s.energy);
-      operator.setSpeakingEnergy(s.energy);
+      const pinned = window.__RF_CAPTURE_VOICE_ENERGY__;
+      const energy = typeof pinned === 'number' ? pinned : s.energy;
+      setAudioEnergy(energy);
+      operator.setSpeakingEnergy(energy);
     });
   }, [operator]);
 
@@ -615,14 +633,16 @@ export function WorldView() {
           {postFx && (
             <EffectComposer multisampling={quality === 'high' ? 2 : 0}>
               <Bloom
-                // Raised threshold with strong intensity: the halo should come
-                // from the bright ring cores only. Blooming the dim mid-tones
-                // as well is what previously lifted red across the whole figure
-                // and desaturated it. The source colours carry no red, so this
-                // halo stays cyan instead of washing to white.
-                intensity={0.78}
-                luminanceThreshold={0.5}
-                luminanceSmoothing={0.7}
+                // High threshold, modest intensity: the halo comes from the
+                // bright ring cores only. Blooming the dim mid-tones as well
+                // lifts red across the figure and desaturates it, and a wide
+                // halo spreads the large bright amber face into a flat disc
+                // over both flanks that buries the cool shell. In the
+                // reference the face glow stays roughly face-sized and the
+                // rings stay readable while speaking.
+                intensity={0.46}
+                luminanceThreshold={0.62}
+                luminanceSmoothing={0.6}
                 mipmapBlur
               />
               <Vignette eskil={false} offset={0.28} darkness={0.55} />
