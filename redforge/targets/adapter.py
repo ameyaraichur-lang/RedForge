@@ -1,7 +1,10 @@
-"""TargetAdapter — HTTP client for any OpenAI-compatible red-team target.
+"""OpenAICompatibleTarget — HTTP client for any OpenAI-compatible red-team target.
 
-`demo_adapter()` wires the adapter to the in-process FastAPI app via
-httpx.ASGITransport so tests (and offline demo runs) need no live server.
+One of the implementations of the ``TargetAdapter`` Protocol in
+``redforge.targets.protocol``. `demo_adapter()` wires it to the in-process
+FastAPI app via httpx.ASGITransport so tests (and offline demo runs) need no
+live server; `tests/test_target_http_real_mode.py` exercises the same class
+over a real socket and asserts both transports find the same flaws.
 """
 from __future__ import annotations
 
@@ -18,8 +21,8 @@ class ChatResponse:
     raw: dict = field(default_factory=dict)
 
 
-class TargetAdapter:
-    """Async client speaking the demo target's OpenAI-compatible API.
+class OpenAICompatibleTarget:
+    """Async client speaking the OpenAI-compatible chat/tools API.
 
     base_url already includes the /v1 prefix, e.g. http://127.0.0.1:8901/v1.
     """
@@ -67,9 +70,12 @@ class TargetAdapter:
             return resp.json()
 
 
-def demo_adapter() -> TargetAdapter:
+DEMO_BASE_URL = "http://demo.local/v1"
+
+
+def demo_adapter() -> OpenAICompatibleTarget:
     """Adapter wired to the in-process demo app — no server required."""
     from .app import app
 
-    return TargetAdapter(base_url="http://demo.local/v1",
-                         transport=httpx.ASGITransport(app=app))
+    return OpenAICompatibleTarget(base_url=DEMO_BASE_URL,
+                                  transport=httpx.ASGITransport(app=app))

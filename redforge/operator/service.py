@@ -11,6 +11,8 @@ from .audit import AuditStore
 from .auth import OperatorPrincipal, role_at_least, session_secret
 from .confirm_store import ConfirmationStore
 from .sessions import issue_confirmation_token, verify_token
+from redforge.schemas.campaign import TargetRequest
+
 from .policy import evaluate_policy
 from .schemas import (
     ALLOWED_ACTIONS,
@@ -37,7 +39,7 @@ class OperatorService:
         confirm_store: ConfirmationStore,
         *,
         live_status: Callable[[], dict],
-        live_start: Callable[[list[str] | None, int], Any],
+        live_start: Callable[[list[str] | None, int, TargetRequest | None], Any],
         live_abort: Callable[[], dict],
         live_gates: Callable[[], list[dict]],
         live_findings: Callable[[], list[dict]],
@@ -321,7 +323,10 @@ class OperatorService:
         if kind == ActionKind.START_CAMPAIGN:
             packs = params.get("packs")
             rounds = int(params.get("rounds", 3))
-            out = await self._live_start(packs, rounds)
+            target = params.get("target")
+            out = await self._live_start(
+                packs, rounds,
+                TargetRequest.model_validate(target) if target else None)
             if isinstance(out, tuple):
                 body, code = out
                 if code != 200:

@@ -39,7 +39,7 @@ from redforge.schemas import (AttackAttempt, BudgetUsage, Campaign, EvidenceRef,
                               JudgeOutcome, LLMDecision, RuleDecision,
                               TargetSpec, Transcript, Turn, Verdict)
 from redforge.scoring import derive_severity, scorecard_from_findings
-from redforge.targets.adapter import TargetAdapter
+from redforge.targets.protocol import TargetAdapter
 
 from .mutator import mutate
 

@@ -15,7 +15,7 @@ import httpx
 from fastmcp import FastMCP
 
 from redforge.catalog import TARGET_CATALOGUE, demo_target
-from redforge.targets.adapter import TargetAdapter, demo_adapter
+from redforge.targets.adapter import OpenAICompatibleTarget, demo_adapter
 
 mcp = FastMCP("redforge-target-adapter")
 
@@ -69,7 +69,7 @@ async def chat(base_url: str, message: str, session_id: str = "default") -> dict
     Returns {"content": str, "tool_calls": [...], "tokens_used": int};
     transport failures add an "error" key instead of raising.
     """
-    adapter = TargetAdapter(base_url)
+    adapter = OpenAICompatibleTarget(base_url)
     try:
         r = await adapter.call_chat([{"role": "user", "content": message}],
                                      session_id=session_id)
@@ -86,7 +86,7 @@ async def list_target_tools(base_url: str) -> dict:
 
     Shadow tools (all minus documented) are the AGE-005/SUP signal.
     """
-    adapter = TargetAdapter(base_url)
+    adapter = OpenAICompatibleTarget(base_url)
     try:
         raw = await adapter.list_tools()
         names = lambda entries: [e.get("name", str(e)) if isinstance(e, dict) else str(e)
@@ -111,7 +111,7 @@ async def call_target_tool(base_url: str, name: str, args_json: str = "{}",
             return {"error": "args_json must be a JSON object"}
     except json.JSONDecodeError as exc:
         return {"error": f"args_json is not valid JSON: {exc}"}
-    adapter = TargetAdapter(base_url)
+    adapter = OpenAICompatibleTarget(base_url)
     try:
         return await adapter.call_tool(name, args, confirmed=confirmed)
     except Exception as exc:

@@ -82,8 +82,25 @@ def wait_for_health(
     interval_s: float = 0.25,
 ) -> None:
     """Poll /api/health; fail fast when the child exits or the deadline passes."""
+    wait_for_url(
+        f"{base_url.rstrip('/')}/api/health",
+        proc,
+        log_path=log_path,
+        timeout_s=timeout_s,
+        interval_s=interval_s,
+    )
+
+
+def wait_for_url(
+    health_url: str,
+    proc: subprocess.Popen[bytes],
+    *,
+    log_path: Path | None = None,
+    timeout_s: float = 30,
+    interval_s: float = 0.25,
+) -> None:
+    """Poll any readiness URL; fail fast when the child exits or the deadline passes."""
     deadline = time.time() + timeout_s
-    health_url = f"{base_url.rstrip('/')}/api/health"
     fail_fast_after: float | None = None
     while time.time() < deadline:
         rc = proc.poll()
@@ -114,28 +131,31 @@ def wait_for_health(
 
 
 @contextmanager
-def uvicorn_server(
+def _served(
+    app_path: str,
+    ready_path: str,
     *,
-    port: int | None = None,
-    host: str = "127.0.0.1",
-    env: dict[str, str] | None = None,
-    log_level: str = "warning",
-    startup_timeout_s: float = 30,
+    port: int | None,
+    host: str,
+    env: dict[str, str] | None,
+    log_level: str,
+    startup_timeout_s: float,
+    operator_db_dir: bool,
 ) -> Iterator[str]:
-    """Start uvicorn on an ephemeral (or explicit) port; yield base URL; tear down."""
+    """Run ``app_path`` under uvicorn until ``ready_path`` answers 200."""
     chosen = port if port is not None else allocate_port(host)
     base = f"http://{host}:{chosen}"
     overrides = env or {}
     with tempfile.TemporaryDirectory(prefix="rf-opdb-") as opdb_dir:
         proc_env = subprocess_demo_env(overrides)
-        if "RF_OPERATOR_DB" not in overrides:
+        if operator_db_dir and "RF_OPERATOR_DB" not in overrides:
             proc_env["RF_OPERATOR_DB"] = str(Path(opdb_dir) / "operator.db")
         log_file = tempfile.NamedTemporaryFile(prefix="rf-uvicorn-", suffix=".log", delete=False)
         log_path = Path(log_file.name)
         log_file.close()
         log_handle = log_path.open("ab")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "redforge.api.server:app",
+            [sys.executable, "-m", "uvicorn", app_path,
              "--host", host, "--port", str(chosen), "--log-level", log_level],
             cwd=str(ROOT),
             env=proc_env,
@@ -145,7 +165,8 @@ def uvicorn_server(
         )
         log_handle.close()
         try:
-            wait_for_health(base, proc, log_path=log_path, timeout_s=startup_timeout_s)
+            wait_for_url(f"{base}{ready_path}", proc, log_path=log_path,
+                         timeout_s=startup_timeout_s)
             yield base
         finally:
             _kill_proc_group(proc)
@@ -155,3 +176,43 @@ def uvicorn_server(
                 proc.kill()
                 proc.wait(timeout=5)
             log_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def demo_target_server(
+    *,
+    port: int | None = None,
+    host: str = "127.0.0.1",
+    log_level: str = "warning",
+    startup_timeout_s: float = 30,
+) -> Iterator[str]:
+    """Serve the vulnerable demo target over a real socket; yield its ``/v1`` base URL.
+
+    ``demo_adapter()`` reaches the same app through an ASGI transport, so this
+    exists to exercise the socket path that the ``real`` target provider uses
+    against a target whose seeded flaws are already known.
+    """
+    with _served(
+        "redforge.targets.app:app", "/v1/models",
+        port=port, host=host, env=None, log_level=log_level,
+        startup_timeout_s=startup_timeout_s, operator_db_dir=False,
+    ) as base:
+        yield f"{base}/v1"
+
+
+@contextmanager
+def uvicorn_server(
+    *,
+    port: int | None = None,
+    host: str = "127.0.0.1",
+    env: dict[str, str] | None = None,
+    log_level: str = "warning",
+    startup_timeout_s: float = 30,
+) -> Iterator[str]:
+    """Start uvicorn on an ephemeral (or explicit) port; yield base URL; tear down."""
+    with _served(
+        "redforge.api.server:app", "/api/health",
+        port=port, host=host, env=env, log_level=log_level,
+        startup_timeout_s=startup_timeout_s, operator_db_dir=True,
+    ) as base:
+        yield base

@@ -36,7 +36,7 @@ def confirm_store(op_db):
 
 
 def _svc(audit: AuditStore, confirm: ConfirmationStore) -> OperatorService:
-    async def _start(packs, rounds):
+    async def _start(packs, rounds, target=None):
         return ({"campaign_id": "C-TEST"}, 200)
 
     return OperatorService(

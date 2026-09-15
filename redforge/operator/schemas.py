@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from redforge.schemas.campaign import TargetRequest
+
 
 class OperatorRole(str, Enum):
     VIEWER = "viewer"
@@ -58,6 +60,10 @@ class NavigateParams(BaseModel):
 class StartCampaignParams(BaseModel):
     packs: list[str] | None = None
     rounds: int = Field(default=3, ge=1, le=3)
+    #: Target selection. Part of the action, so it is covered by the action
+    #: fingerprint the confirmation token binds to — a confirmation for a
+    #: campaign against the fixture cannot be replayed against a live asset.
+    target: TargetRequest | None = None
 
 
 class InspectFindingParams(BaseModel):

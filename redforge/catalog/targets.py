@@ -55,6 +55,28 @@ def demo_target() -> TargetSpec:
         prod_safety_notes="Local fixture — seeded flaw per pack (M1 gate)", asset_criticality=2)
 
 
-def campaign_target() -> TargetSpec:
-    """Target spec for live campaigns (always the demo fixture unless extended)."""
-    return demo_target()
+def all_targets() -> list[TargetSpec]:
+    """Every selectable target spec: the 10 catalogue classes plus the fixture."""
+    return [*TARGET_CATALOGUE, demo_target()]
+
+
+def resolve_target_spec(target_id: str | None) -> TargetSpec:
+    """Look up a catalogue spec by id. ``None`` selects the demo fixture.
+
+    Raises ``KeyError`` for an unknown id rather than falling back, so a typo'd
+    target can never be silently redirected at the local fixture and scored as
+    though it were the asset the operator named.
+    """
+    if not target_id:
+        return demo_target()
+    wanted = target_id.strip().upper()
+    for spec in all_targets():
+        if spec.id.upper() == wanted:
+            return spec
+    known = ", ".join(s.id for s in all_targets())
+    raise KeyError(f"unknown target id {target_id!r}; known: {known}")
+
+
+def campaign_target(target_id: str | None = None) -> TargetSpec:
+    """Target spec for live campaigns; defaults to the demo fixture."""
+    return resolve_target_spec(target_id)

@@ -31,8 +31,9 @@ def audit_tmp():
         yield AuditStore(db), ConfirmationStore(db)
 
 
-async def _mock_start(packs, rounds):
-    return ({"campaign_id": "C-TEST"}, 200)
+async def _mock_start(packs, rounds, target=None):
+    return ({"campaign_id": "C-TEST", "target_id": (target.target_id if target
+                                                    else "TGT-DEMO")}, 200)
 
 
 def _svc(audit: AuditStore, confirm: ConfirmationStore) -> OperatorService:

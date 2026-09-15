@@ -35,15 +35,21 @@ from ..operator.service import OperatorService
 from ..operator.voice import SttRequest, TtsRequest, get_voice_gateway
 
 from ..catalog import PACKS, TECHNIQUES, TARGET_CATALOGUE, campaign_target, demo_target, world_manifest
-from ..config import effective_judge_provider, effective_target_provider, settings
+from ..config import effective_judge_provider, settings
 from ..evidence.store import EvidenceStore
 from ..judge import get_judge
 from ..judge.llm_judge import AstraLLMJudge, DemoLLMJudge, RealLLMJudge
 from ..reporting import generate_report, render_pdf
 from ..schemas import BudgetCaps, Campaign
+from ..schemas.campaign import TargetRequest
 from ..swarm import CampaignEngine
 from ..swarm.runner import CampaignResult
-from ..targets import get_target_adapter, target_adapter_kind
+from ..targets import (
+    TargetResolutionError,
+    get_target_adapter,
+    resolve_endpoint,
+    target_adapter_kind,
+)
 from ..version import api_version, release_codename
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "output" / "live"
@@ -145,18 +151,29 @@ class LiveCampaign:
             self.briefings.append({"seq": len(self.events), "text": text, "ts": event["ts"]})
 
     # -------------------------------------------------------------- control
-    async def start(self, packs: list[str] | None, rounds: int) -> tuple[dict, int]:
+    async def start(self, packs: list[str] | None, rounds: int,
+                    target: TargetRequest | None = None) -> tuple[dict, int]:
         if self.running:
             return {"error": "campaign already running"}, 409
+        # Resolve the target BEFORE resetting state, so a bad request leaves any
+        # previous campaign's results intact and returns a usable error.
+        try:
+            target_spec = campaign_target(target.target_id if target else None)
+            endpoint = resolve_endpoint(target, target_spec)
+            adapter = get_target_adapter(target, target_spec)
+        except (KeyError, TargetResolutionError) as e:
+            return {"error": str(e)}, 400
         subscribers = self.queues  # keep live SSE streams attached across the reset
         seq = self.seq  # keep seq monotonic (stream gate drops e.seq <= sent)
         self.__init__()  # reset state
         self.queues = subscribers
         self.seq = seq
         self.store = LiveStore()
-        target_spec = campaign_target()
-        adapter = get_target_adapter()
-        live_provider = effective_target_provider()
+        live_provider = endpoint.provider
+        # Record the endpoint that was actually attacked, so the evidence bundle
+        # names the asset rather than just its catalogue class. Never the key.
+        if endpoint.provider != "demo" and endpoint.base_url:
+            target_spec = target_spec.model_copy(update={"base_url": endpoint.base_url})
         self.campaign = Campaign(
             id=f"C-LIVE-{datetime.now(timezone.utc).strftime('%H%M%S')}",
             name=f"RedForge live campaign ({live_provider} target)",
@@ -186,14 +203,13 @@ class LiveCampaign:
 
         self.task = asyncio.create_task(_run())
         judge_provider = effective_judge_provider()
-        self.publish({"type": "campaign_start", "campaign_id": self.campaign.id,
-                      "packs": self.campaign.packs, "rounds_max": self.campaign.rounds_max,
-                      "target_id": target_spec.id, "target_provider": live_provider,
-                      "judge_provider": judge_provider})
-        return {"campaign_id": self.campaign.id, "packs": self.campaign.packs,
-                "rounds_max": self.campaign.rounds_max,
-                "target_id": target_spec.id, "target_provider": live_provider,
-                "judge_provider": judge_provider}, 200
+        summary = {"campaign_id": self.campaign.id, "packs": self.campaign.packs,
+                   "rounds_max": self.campaign.rounds_max,
+                   "target_id": target_spec.id, "target_provider": live_provider,
+                   "target_base_url": target_spec.base_url,
+                   "judge_provider": judge_provider}
+        self.publish({"type": "campaign_start", **summary})
+        return summary, 200
 
     def abort(self) -> dict:
         if self.running and self.task:
@@ -325,6 +341,8 @@ app.add_middleware(CORSMiddleware, allow_origins=[
 class StartBody(BaseModel):
     packs: list[str] | None = None
     rounds: int = 3
+    #: Omit to keep the env-configured target (demo fixture by default).
+    target: TargetRequest | None = None
 
 
 def _judge_mode() -> str:
@@ -345,9 +363,13 @@ def _operator_security_startup() -> None:
 @app.get("/api/health")
 def health() -> dict:
     audit_ok = _audit_store.chain_valid
+    # Report the provider that would actually be used, canonicalised. Reading
+    # effective_target_provider() directly used to let health claim "real"
+    # while target_adapter said "demo" (real configured, no credential).
+    endpoint = resolve_endpoint()
     return {
         "ok": audit_ok,
-        "target_provider": effective_target_provider(),
+        "target_provider": endpoint.provider,
         "judge_provider": effective_judge_provider(),
         "target_adapter": target_adapter_kind(get_target_adapter()),
         "judge_mode": _judge_mode(),
@@ -360,7 +382,7 @@ def health() -> dict:
 
 @app.post("/api/campaign/start")
 async def start_campaign(body: StartBody) -> JSONResponse:
-    result, code = await live.start(body.packs, body.rounds)
+    result, code = await live.start(body.packs, body.rounds, body.target)
     return JSONResponse(result, status_code=code)
 
 

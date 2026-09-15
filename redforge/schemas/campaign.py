@@ -39,6 +39,25 @@ class TargetSpec(BaseModel):
     asset_criticality: int = Field(default=1, ge=1, le=5)
 
 
+class TargetRequest(BaseModel):
+    """Per-campaign target selection, supplied by the API or an operator action.
+
+    Deliberately carries no secret. ``api_key_env`` names an environment
+    variable the server reads at build time, because this object is echoed in
+    campaign events and archived into the evidence bundle — and the EXF pack
+    exists precisely to make systems disclose the context they were handed.
+    """
+
+    target_id: str | None = None   # catalogue id, e.g. TGT-04; None = demo fixture
+    provider: str | None = None    # demo | openai-compatible (legacy 'real' accepted)
+    base_url: str | None = None    # overrides TargetSpec.base_url and RF_TARGET_BASE_URL
+    api_key_env: str | None = None  # NAME of an env var holding the key, never the key
+
+    def is_explicit(self) -> bool:
+        """True when the caller asked for something beyond the env defaults."""
+        return any((self.target_id, self.provider, self.base_url, self.api_key_env))
+
+
 class BudgetCaps(BaseModel):
     max_attempts: int = 500
     max_tokens: int = 2_000_000

@@ -1,30 +1,91 @@
-"""Target adapter factory — demo or OpenAI-compatible real mode.
+"""Resolve a campaign target request into a built adapter.
 
-Astra is judge-only (LLM validation); it is never selected as a campaign target.
+Two entry paths, with deliberately different failure behaviour:
+
+* **Env-driven** (no explicit request) keeps the historical contract — an
+  incompletely configured ``real`` target degrades to the demo fixture, so an
+  unconfigured checkout still runs.
+* **Explicit** (the caller named a target, provider, or URL) never degrades. If
+  it cannot be built as asked it raises, because silently attacking the local
+  fixture while reporting a scorecard for someone else's asset is worse than
+  failing the request.
+
+Astra is judge-only; it is rejected here, in the registry, and in
+``config.effective_target_provider()``.
 """
 from __future__ import annotations
 
-from typing import Any
+import os
 
 from redforge.config import effective_target_provider, settings
+from redforge.schemas.campaign import TargetRequest, TargetSpec
 
-from .adapter import TargetAdapter, demo_adapter
+from .protocol import TargetAdapter
+from .registry import (
+    JUDGE_ONLY_PROVIDERS,
+    TargetEndpoint,
+    TargetResolutionError,
+    build,
+    canonical_provider,
+    kind_for,
+)
 
 
-def get_target_adapter() -> Any:
-    """Return the configured campaign target adapter (demo-mode-first when unset)."""
-    provider = effective_target_provider()
-    if provider == "real" and settings.target_api_key:
-        return TargetAdapter(settings.target_base_url.rstrip("/"),
-                             api_key=settings.target_api_key)
-    return demo_adapter()
+def resolve_endpoint(
+    request: TargetRequest | None = None,
+    spec: TargetSpec | None = None,
+) -> TargetEndpoint:
+    """Work out which provider to use and how to reach it."""
+    request = request or TargetRequest()
+    explicit = request.is_explicit()
+
+    provider = canonical_provider(
+        request.provider or effective_target_provider())
+    if provider in JUDGE_ONLY_PROVIDERS:
+        # Defence in depth: effective_target_provider() already coerces this.
+        if explicit and request.provider:
+            raise TargetResolutionError(
+                f"{request.provider} is judge-only and cannot be a campaign target")
+        provider = "demo"
+
+    # Precedence: explicit request, then the catalogue spec's own endpoint,
+    # then the environment default.
+    base_url = (request.base_url
+                or (spec.base_url if spec else "")
+                or settings.target_base_url)
+
+    if request.api_key_env:
+        api_key = os.environ.get(request.api_key_env, "")
+        if not api_key:
+            raise TargetResolutionError(
+                f"api_key_env={request.api_key_env!r} is unset or empty on the server")
+    else:
+        api_key = settings.target_api_key
+
+    if provider != "demo" and not api_key:
+        if explicit:
+            raise TargetResolutionError(
+                f"provider {provider!r} needs a credential; set RF_TARGET_API_KEY "
+                "or pass api_key_env")
+        # Legacy env path: an unconfigured real target falls back to the fixture.
+        provider, base_url = "demo", ""
+
+    return TargetEndpoint(provider=provider, base_url=base_url, api_key=api_key)
 
 
-def target_adapter_kind(adapter: Any) -> str:
+def get_target_adapter(
+    request: TargetRequest | None = None,
+    spec: TargetSpec | None = None,
+) -> TargetAdapter:
+    """Return the adapter for this campaign (demo-mode-first when unset)."""
+    return build(resolve_endpoint(request, spec))
+
+
+def target_adapter_kind(adapter: TargetAdapter) -> str:
     """Short label for health/status endpoints."""
+    from .adapter import DEMO_BASE_URL
+
     base_url = getattr(adapter, "base_url", "")
-    if base_url in ("http://demo.local/v1", demo_adapter().base_url):
+    if not base_url or base_url.rstrip("/") == DEMO_BASE_URL:
         return "demo"
-    if base_url:
-        return "openai-compatible"
-    return "demo"
+    return kind_for("openai-compatible")
