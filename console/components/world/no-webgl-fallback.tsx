@@ -29,6 +29,10 @@ import {
 } from '@/lib/summon-anchor';
 import { EntryAuthPanel } from '@/components/world/entry-auth-panel';
 import { ReadinessPrompt } from '@/components/world/readiness-prompt';
+import { CampaignTargetPicker } from '@/components/ui/campaign-target-picker';
+import { DEFAULT_TARGET_PICKER } from '@/lib/targets';
+import { CampaignStartFeedback } from '@/components/ui/campaign-start-feedback';
+import { buildTargetPayload, type TargetPickerState, validateApiKeyEnvName } from '@/lib/targets';
 import { cn } from '@/lib/utils';
 
 export function NoWebGLFallback({ onEnter }: { onEnter?: () => void }) {
@@ -38,6 +42,8 @@ export function NoWebGLFallback({ onEnter }: { onEnter?: () => void }) {
   const [manifest, setManifest] = useState<WorldManifest | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [phase, setPhase] = useState<EntryPhase>('initializing');
+  const [targetPick, setTargetPick] = useState<TargetPickerState>(DEFAULT_TARGET_PICKER);
+  const [startError, setStartError] = useState<string | null>(null);
   const initDone = useRef(false);
 
   useEffect(() => {
@@ -131,6 +137,18 @@ export function NoWebGLFallback({ onEnter }: { onEnter?: () => void }) {
   const liveNow = isMissionControlLive(phase);
   const states = useMemo(() => nodeStatesFromEvents(events), [events]);
   const byId = manifest ? manifestNodeById(manifest) : {};
+  const running = status?.running ?? false;
+
+  const onStartCampaign = async () => {
+    setStartError(null);
+    const envErr = validateApiKeyEnvName(targetPick.apiKeyEnv);
+    if (envErr) {
+      setStartError(envErr);
+      return;
+    }
+    const out = await live.start(null, 3, buildTargetPayload(targetPick));
+    if (!out.ok && out.error) setStartError(out.error);
+  };
 
   return (
     <main
@@ -224,10 +242,36 @@ export function NoWebGLFallback({ onEnter }: { onEnter?: () => void }) {
 
       {liveNow && (
         <>
+          <section className="rounded border border-line/40 bg-panel/40 p-3" aria-label="Campaign control">
+            <CampaignTargetPicker
+              value={targetPick}
+              onChange={setTargetPick}
+              operatorRole={op.session?.role}
+              running={running}
+              variant="world"
+            />
+            <CampaignStartFeedback events={events} />
+            {startError && (
+              <p className="mt-2 font-mono text-[10px] text-crit" role="alert">
+                {startError}
+              </p>
+            )}
+            <div className="mt-3 flex gap-2">
+              {running ? (
+                <button type="button" className="world-btn world-btn-crit text-[10px]" onClick={() => void live.abort()}>
+                  abort campaign
+                </button>
+              ) : (
+                <button type="button" className="world-btn text-[10px]" onClick={() => void onStartCampaign()}>
+                  start campaign
+                </button>
+              )}
+            </div>
+          </section>
           <section className="font-mono text-[10px] text-dim">
             <p>connected: {connected ? 'yes' : 'offline demo'}</p>
             <p>operator: {op.authStatus}</p>
-            <p>campaign: {status?.running ? 'running' : status?.stopped_reason ?? 'standby'}</p>
+            <p>campaign: {running ? 'running' : status?.stopped_reason ?? 'standby'}</p>
           </section>
           <OperatorDock visible missionControlLive />
         </>

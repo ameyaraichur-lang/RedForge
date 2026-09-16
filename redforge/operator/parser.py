@@ -34,6 +34,10 @@ _RULES: list[tuple[list[str], ActionKind, dict]] = [
 
 _FINDING_RE = re.compile(r"\b(?:finding|rf-f)[-\s]?(\w+)\b", re.I)
 _GATE_RE = re.compile(r"\bgate[-\s]?(\w+)\b", re.I)
+#: Catalogue target ids as spoken or typed: "TGT-04", "tgt 04", "tgt demo".
+#: Only the suffix is captured, so the canonical id is rebuilt rather than
+#: patched up from whatever separator the operator used.
+_TARGET_RE = re.compile(r"\btgt[-\s]?(demo|\d{2})\b", re.I)
 
 
 def parse_natural_language(
@@ -63,6 +67,11 @@ def parse_natural_language(
                     params["rounds"] = 1
                 elif "2 round" in lower or "two round" in lower:
                     params["rounds"] = 2
+                m = _TARGET_RE.search(raw)
+                if m:
+                    # Unknown ids are rejected by the catalogue, and Astra is
+                    # refused by the registry, so this only has to normalise.
+                    params["target"] = {"target_id": f"TGT-{m.group(1).upper()}"}
             return ParsedIntent(
                 action=OperatorAction(
                     kind=kind,

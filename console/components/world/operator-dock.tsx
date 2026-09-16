@@ -206,7 +206,7 @@ export function OperatorDock({ visible, missionControlLive = true }: { visible: 
           onChange={(e) => setText(e.target.value)}
           placeholder={
             commandsEnabled
-              ? 'status · start campaign · open findings…'
+              ? 'status · start campaign on TGT-04 · open findings…'
               : op.authStatus === 'initializing'
                 ? 'initializing operator session…'
                 : 'login required for operator commands'

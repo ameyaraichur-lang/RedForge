@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Permit allowlisted hostnames that resolve into private/loopback ranges.
     # Exact IP-literal allowlist entries are always honoured without this.
     target_allow_private_egress: bool = False
+    # Operator-controlled authorisation-to-test records (see
+    # targets/authorization.py). Unset = no non-demo target is authorised, so a
+    # forgotten file fails closed rather than attacking an unapproved asset.
+    target_authorizations_path: str = ""
 
     # Azure OpenAI GPT Astra — Responses API (api-version 2025-04-01-preview)
     astra_endpoint: str = "https://dev-agentic.openai.azure.com"

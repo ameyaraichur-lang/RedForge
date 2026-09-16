@@ -133,7 +133,7 @@ export function Copilot() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
-            placeholder="report status · start campaign · open findings…"
+            placeholder="report status · start campaign on TGT-DEMO · open findings…"
             className="min-w-0 flex-1 bg-transparent font-mono text-[13px] text-slate-100 outline-none placeholder:text-dim"
             aria-label="Copilot command input"
           />

@@ -39,6 +39,7 @@ from redforge.schemas import (AttackAttempt, BudgetUsage, Campaign, EvidenceRef,
                               JudgeOutcome, LLMDecision, RuleDecision,
                               TargetSpec, Transcript, Turn, Verdict)
 from redforge.scoring import derive_severity, scorecard_from_findings
+from redforge.targets import target_adapter_kind
 from redforge.targets.protocol import TargetAdapter
 
 from .mutator import mutate
@@ -109,6 +110,9 @@ class _CampaignRun:
     gates: list[GateRequest] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
     attempts_per_pack: dict[str, int] = field(default_factory=dict)
+    # attempts no oracle could observe — removed from the scorecard denominator
+    inconclusive_per_pack: dict[str, int] = field(default_factory=dict)
+    fixture_target: bool = True
     # finding id -> first raw payload / owning attempt id (Verifier input)
     first_payload: dict[str, str] = field(default_factory=dict)
     attempt_by_finding: dict[str, str] = field(default_factory=dict)
@@ -205,6 +209,9 @@ class CampaignEngine:
             adapter=adapter,
             store=store if store is not None else self.store,
             ids=RunIds(self.run_seed),
+            # The flaw contract's marker strings are the bundled simulator's own
+            # text, so they only prove anything against the bundled simulator.
+            fixture_target=target_adapter_kind(adapter) == "demo",
         )
         self._current_events = run.events
         try:
@@ -216,7 +223,8 @@ class CampaignEngine:
             # ---- N8 Scorer (campaign-level) ----
             self._emit("node_start", node="N8_scorer")
             run.scorecard = scorecard_from_findings(run.findings,
-                                                    run.attempts_per_pack)
+                                                    run.attempts_per_pack,
+                                                    run.inconclusive_per_pack)
             self._emit("scorecard", scorecard=run.scorecard)
             self._emit("node_end", node="N8_scorer")
             self._emit("campaign_end", campaign_id=campaign.id,
@@ -409,7 +417,8 @@ class CampaignEngine:
         canary = self._canary_for(run, tech_id)
         webhook = self._webhook()
         context = {"canary": canary, "webhook": webhook,
-                   "usage_cap": campaign.caps.max_tokens}
+                   "usage_cap": campaign.caps.max_tokens,
+                   "fixture_markers_valid": run.fixture_target}
         attempt_id = f"RF-A-{run.ids.hex8()}"
         transcript = Transcript(id=f"RF-T-{run.ids.hex8()}", attempt_id=attempt_id,
                                 technique_id=tech_id, target_id=target.id)
@@ -426,6 +435,7 @@ class CampaignEngine:
         tokens = 0
         success_verdict: Verdict | None = None
         saw_close = False
+        saw_conclusive = False
         last_verdict: Verdict | None = None
         for raw_turn in turns:
             sent = substitute(raw_turn, canary, webhook)
@@ -450,13 +460,23 @@ class CampaignEngine:
             last_verdict = verdict
             if verdict.combined is JudgeOutcome.CLOSE:
                 saw_close = True
+            if verdict.conclusive:
+                saw_conclusive = True
             if (verdict.combined is JudgeOutcome.SUCCESS
                     and success_verdict is None):
                 success_verdict = verdict
             self._emit("verdict", attempt_id=attempt_id, tech_id=tech_id,
                        combined=verdict.combined.value,
                        escalated=verdict.escalated_to_human,
+                       conclusive=verdict.conclusive,
+                       missing_oracles=verdict.missing_oracles,
                        llm_judge=llm.judge)
+
+        # One attempt, many turns: the attempt was only unobservable when not a
+        # single turn could be judged either way.
+        if not saw_conclusive:
+            run.inconclusive_per_pack[tech.pack] = (
+                run.inconclusive_per_pack.get(tech.pack, 0) + 1)
 
         attempt.tokens_used = tokens
         attempt.cost_usd = tokens * COST_PER_TOKEN
@@ -589,7 +609,8 @@ class CampaignEngine:
             tech_id = finding.technique_id
             canary = self._canary_for(run, tech_id)
             context = {"canary": canary, "webhook": self._webhook(),
-                       "usage_cap": run.campaign.caps.max_tokens}
+                       "usage_cap": run.campaign.caps.max_tokens,
+                       "fixture_markers_valid": run.fixture_target}
             sent = substitute(raw, canary, self._webhook())
             resp = await run.adapter.call_chat(
                 [{"role": "user", "content": sent}],
@@ -613,11 +634,17 @@ class CampaignEngine:
             if verdict.combined is JudgeOutcome.SUCCESS:
                 finding.status = FindingStatus.CONFIRMED
                 finding.reproduced = True
+            elif verdict.combined is JudgeOutcome.INCONCLUSIVE:
+                # A replay nothing could observe is not evidence the original
+                # finding was a false positive. Leave it CANDIDATE — voiding
+                # here would quietly delete real findings on opaque targets.
+                finding.reproduced = None
             else:
                 finding.status = FindingStatus.VOIDED
                 finding.reproduced = False
             self._emit("verify", finding_id=finding.id, tech_id=tech_id,
                        reproduced=finding.reproduced,
+                       conclusive=verdict.conclusive,
                        status=finding.status.value)
             await self._persist(run.store, finding)
 

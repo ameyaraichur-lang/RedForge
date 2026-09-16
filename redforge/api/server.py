@@ -47,8 +47,13 @@ from ..swarm import CampaignEngine
 from ..swarm.runner import CampaignResult
 from ..targets import (
     TargetResolutionError,
+    authorization_for,
+    caps_for_target,
+    clamped_fields,
+    endpoint_kind,
     get_target_adapter,
     resolve_endpoint,
+    safety_briefing,
     target_adapter_kind,
 )
 from ..version import api_version, release_codename
@@ -161,7 +166,10 @@ class LiveCampaign:
         try:
             target_spec = campaign_target(target.target_id if target else None)
             endpoint = resolve_endpoint(target, target_spec)
+            # Builds the client and, for non-demo targets, requires a recorded
+            # authorisation-to-test covering this asset, host and moment.
             adapter = get_target_adapter(target, target_spec)
+            authorization = authorization_for(target, target_spec)
         except (KeyError, TargetResolutionError) as e:
             return {"error": str(e)}, 400
         subscribers = self.queues  # keep live SSE streams attached across the reset
@@ -175,13 +183,20 @@ class LiveCampaign:
         # names the asset rather than just its catalogue class. Never the key.
         if endpoint.provider != "demo" and endpoint.base_url:
             target_spec = target_spec.model_copy(update={"base_url": endpoint.base_url})
+        # The catalogue declares how critical each asset is; clamp the run to
+        # what that criticality permits instead of always asking for the
+        # fixture-sized budget.
+        requested_caps = BudgetCaps(max_attempts=600, max_tokens=50_000_000,
+                                    max_cost_usd=100.0)
+        caps = caps_for_target(target_spec, requested_caps)
+        capped = clamped_fields(target_spec, requested_caps)
         self.campaign = Campaign(
             id=f"C-LIVE-{datetime.now(timezone.utc).strftime('%H%M%S')}",
             name=f"RedForge live campaign ({live_provider} target)",
             targets=[target_spec],
             packs=packs or list(PACKS),
             rounds_max=max(1, min(3, rounds)),
-            caps=BudgetCaps(max_attempts=600, max_tokens=50_000_000, max_cost_usd=100.0),
+            caps=caps,
         )
         self.started_at = datetime.now(timezone.utc).isoformat()
         engine = CampaignEngine(judge=get_judge())
@@ -208,7 +223,18 @@ class LiveCampaign:
                    "rounds_max": self.campaign.rounds_max,
                    "target_id": target_spec.id, "target_provider": live_provider,
                    "target_base_url": target_spec.base_url,
-                   "judge_provider": judge_provider}
+                   "judge_provider": judge_provider,
+                   "asset_criticality": target_spec.asset_criticality,
+                   "safety_briefing": safety_briefing(target_spec),
+                   # A clamp the operator cannot see looks like their own number.
+                   "caps_clamped": {k: {"requested": v[0], "applied": v[1]}
+                                    for k, v in capped.items()},
+                   "caps": self.campaign.caps.model_dump(),
+                   "authorization": ({"owner": authorization.owner,
+                                      "approver": authorization.approver,
+                                      "reference": authorization.reference,
+                                      "not_after": authorization.not_after.isoformat()}
+                                     if authorization else None)}
         self.publish({"type": "campaign_start", **summary})
         return summary, 200
 
@@ -367,12 +393,15 @@ def health() -> dict:
     # Report the provider that would actually be used, canonicalised. Reading
     # effective_target_provider() directly used to let health claim "real"
     # while target_adapter said "demo" (real configured, no credential).
+    # Reported from the resolved endpoint rather than by building an adapter:
+    # constructing one now requires an authorisation-to-test, and a missing
+    # approval must not make the deployment look unhealthy.
     endpoint = resolve_endpoint()
     return {
         "ok": audit_ok,
         "target_provider": endpoint.provider,
         "judge_provider": effective_judge_provider(),
-        "target_adapter": target_adapter_kind(get_target_adapter()),
+        "target_adapter": endpoint_kind(endpoint),
         "judge_mode": _judge_mode(),
         "running": live.running,
         "events": len(live.events),

@@ -5,6 +5,8 @@ describe('worldBus G2 runtime semantics', () => {
   it('maps G2 gate_approved to G2_release impact, not G1', () => {
     worldBus.reset();
     worldBus.ingest({
+      seq: 1,
+      ts: '2026-01-01T00:00:00Z',
       type: 'gate_approved',
       gate_level: 'G2',
       gate_request_id: 'RF-G2-test',
@@ -18,6 +20,8 @@ describe('worldBus G2 runtime semantics', () => {
   it('maps G1 gate_approved to G1_gatekeeper only', () => {
     worldBus.reset();
     worldBus.ingest({
+      seq: 2,
+      ts: '2026-01-01T00:00:01Z',
       type: 'gate_approved',
       gate_level: 'G1',
       gate_request_id: 'RF-G1-test',

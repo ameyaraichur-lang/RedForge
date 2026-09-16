@@ -79,6 +79,13 @@ def generate_report(findings: list, verdicts: list | None, scorecard: dict,
     band = str(scorecard.get("band", "n/a"))
     maturity = str(scorecard.get("maturity", "n/a"))
     total_score = scorecard.get("total", 0)
+    # A run that could not observe its own attempts has no defensible band;
+    # the report must say so where the grade is read, not bury it.
+    band_qualified = bool(scorecard.get("band_qualified", True))
+    band_caveat = str(scorecard.get("band_caveat") or "")
+    coverage_overall = scorecard.get("coverage_overall")
+    total_observed = scorecard.get("total_observed")
+    unscored_dims = list(scorecard.get("unscored_dimensions") or [])
 
     # ---- structured sections ------------------------------------------------
     rows: list[dict] = []
@@ -116,6 +123,11 @@ def generate_report(findings: list, verdicts: list | None, scorecard: dict,
         sentences.append("No critical-severity findings were recorded.")
     sentences.append(f"The composite scorecard total is {total_score} "
                      f"(band {band}; maturity {maturity}).")
+    if not band_qualified:
+        sentences.append(band_caveat)
+        if total_observed is not None:
+            sentences.append(f"Scored over observable attempts only, the total "
+                             f"is {total_observed}.")
     sentences.append("Per-pack remediation guidance follows the findings and "
                      "compliance mapping below.")
 
@@ -138,8 +150,19 @@ def generate_report(findings: list, verdicts: list | None, scorecard: dict,
         "| --- | --- |",
     ]
     for dim, weighted in contributions.items():
-        lines.append(f"| {dim} | {weighted} |")
+        suffix = " _(not measured)_" if dim in unscored_dims else ""
+        lines.append(f"| {dim} | {weighted}{suffix} |")
     lines.append(f"| **Total** | **{total_score} — {band}** |")
+    if not band_qualified:
+        observed = ("n/a" if total_observed is None else str(total_observed))
+        lines += [
+            "",
+            f"> **Band withheld.** {band_caveat}",
+            ">",
+            f"> Observable attempts: "
+            f"{'n/a' if coverage_overall is None else f'{coverage_overall:.0%}'}"
+            f" · observed-only total: {observed}",
+        ]
     lines += [
         "",
         "## Findings",
@@ -189,7 +212,12 @@ def generate_report(findings: list, verdicts: list | None, scorecard: dict,
                  "generated": generated},
         "executive": " ".join(sentences),
         "scorecard": {"contributions": contributions, "total": total_score,
-                      "band": band, "maturity": maturity},
+                      "band": band, "maturity": maturity,
+                      "band_qualified": band_qualified,
+                      "band_caveat": band_caveat,
+                      "coverage_overall": coverage_overall,
+                      "total_observed": total_observed,
+                      "unscored_dimensions": unscored_dims},
         "findings": rows,
         "compliance": {"readiness": ratio, "mapped": mapped,
                        "total": stats["total"], "packs": packs_controls},

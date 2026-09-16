@@ -16,6 +16,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { postCampaignStart, type TargetRequestPayload } from '@/lib/targets';
 
 export type LiveEvent = { seq: number; ts: string; type: string } & Record<string, unknown>;
 
@@ -85,7 +86,7 @@ type LiveContextValue = {
   voiceOn: boolean;
   setHudMode: (v: boolean) => void;
   setVoiceOn: (v: boolean) => void;
-  start: (packs: string[] | null, rounds: number) => Promise<void>;
+  start: (packs: string[] | null, rounds: number, target?: TargetRequestPayload) => Promise<{ ok: boolean; error?: string }>;
   abort: () => Promise<void>;
   signGate: (gateId: string, signer: string) => Promise<void>;
   refreshFindings: () => Promise<LiveFinding[]>;
@@ -220,16 +221,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // ------------------------------------------------------------ control
-  const start = useCallback(async (packs: string[] | null, rounds: number) => {
+  const start = useCallback(async (packs: string[] | null, rounds: number, target?: TargetRequestPayload) => {
     briefCountRef.current = 0;
     pendingEvents.current = [];
     setEvents([]);
     setBriefings([]);
-    await fetch('/api/campaign/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ packs, rounds }),
-    });
+    const result = await postCampaignStart(packs, rounds, target);
+    return result.ok ? { ok: true } : { ok: false, error: result.error };
   }, []);
 
   const abort = useCallback(async () => {

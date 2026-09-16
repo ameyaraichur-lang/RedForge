@@ -6,7 +6,7 @@
   blueprint tenet is that only OPA/policy derives severity authoritatively).
 - rego_runner: subprocess bridge to the OPA binary + silent Python fallback.
 """
-from .engine import regulatory_actual, scorecard_from_findings
+from .engine import COVERAGE_THRESHOLD, regulatory_actual, scorecard_from_findings
 from .severity import PACK_FACTORS, derive_severity, needs_human_confirmation
 from .rego_runner import (SourcedSeverity, opa_available, opa_eval,
                           score_via_opa, severity_via_opa)
@@ -15,6 +15,7 @@ from .rego_runner import (SourcedSeverity, opa_available, opa_eval,
 from redforge.catalog.scorecard import compute_score
 
 __all__ = [
+    "COVERAGE_THRESHOLD",
     "compute_score",
     "regulatory_actual",
     "scorecard_from_findings",

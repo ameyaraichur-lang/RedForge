@@ -82,6 +82,10 @@ import { HeroEntryChrome } from '@/components/world/hero-entry-chrome';
 import { EntryAuthPanel } from '@/components/world/entry-auth-panel';
 import { useOperator } from '@/lib/operator-context';
 import { onVoiceEnergy, speakViaGateway } from '@/lib/voice';
+import { CampaignTargetPicker } from '@/components/ui/campaign-target-picker';
+import { DEFAULT_TARGET_PICKER } from '@/lib/targets';
+import { CampaignStartFeedback } from '@/components/ui/campaign-start-feedback';
+import { buildTargetPayload, type TargetPickerState } from '@/lib/targets';
 
 type QualityTier = 'high' | 'medium' | 'low';
 
@@ -117,6 +121,7 @@ export function WorldView() {
   const [summonT, setSummonT] = useState(0);
   const buildCtxRef = useRef<EntryContext | null>(null);
   const [entryDecision, setEntryDecision] = useState<ReturnType<typeof resolveInitialEntry> | null>(null);
+  const [targetPick, setTargetPick] = useState<TargetPickerState>(DEFAULT_TARGET_PICKER);
   const [heroCaption, setHeroCaption] = useState('RedForge systems initializing…');
   const [captureMode, setCaptureMode] = useState<ReturnType<typeof readCaptureMode> | null>(null);
   const [visualAssemblyProgress, setVisualAssemblyProgress] = useState(0);
@@ -436,8 +441,8 @@ export function WorldView() {
     worldBus.reset();
     ingested.current = 0;
     window.dispatchEvent(new CustomEvent('rf:command', { detail: 'run full campaign' }));
-    void start(null, 3);
-  }, [start, liveNow]);
+    void start(null, 3, buildTargetPayload(targetPick));
+  }, [start, liveNow, targetPick]);
 
   const onAbort = useCallback(() => {
     if (!liveNow) return;
@@ -767,6 +772,19 @@ export function WorldView() {
             />
           )}
           <WorldReplay total={source.length} position={replayPos} onPosition={setReplayPos} />
+          <div
+            className="pointer-events-auto absolute left-6 top-[420px] z-10 w-[min(320px,calc(100vw-3rem))] space-y-2 rounded border border-line/40 bg-ink/90 p-3 backdrop-blur-md"
+            aria-label="Campaign target selection"
+          >
+            <CampaignTargetPicker
+              value={targetPick}
+              onChange={setTargetPick}
+              operatorRole={operator.session?.role}
+              running={running}
+              variant="world"
+            />
+            <CampaignStartFeedback events={effective} />
+          </div>
           <ObjectiveBanner snap={snap} onStart={onStart} onAbort={onAbort} running={running} stopped={status?.stopped_reason} offline={!connected} />
           <OperatorDock visible missionControlLive />
         </>

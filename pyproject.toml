@@ -40,4 +40,8 @@ markers = [
     "optional_pyrit: requires the optional PyRIT package",
     "optional_opa: requires the OPA binary at RF_OPA_PATH",
     "live_astra: calls paid Azure Astra (opt-in via RF_LIVE_ASTRA=1 only)",
+    "conformance: attacks a real external target (opt-in via RF_CONFORMANCE_BASE_URL)",
 ]
+# The release suite stays hermetic: conformance tests reach a third-party
+# endpoint, so they never run as part of a plain `pytest` or a gate.
+addopts = "-m 'not conformance'"

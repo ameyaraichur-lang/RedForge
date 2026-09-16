@@ -28,6 +28,11 @@ import {
 } from '@/lib/live';
 import { Constellation } from '@/components/hud/constellation';
 import { ReplayScrubber } from '@/components/hud/replay-scrubber';
+import { CampaignTargetPicker } from '@/components/ui/campaign-target-picker';
+import { DEFAULT_TARGET_PICKER } from '@/lib/targets';
+import { CampaignStartFeedback } from '@/components/ui/campaign-start-feedback';
+import { useOperator } from '@/lib/operator-context';
+import { buildTargetPayload, type TargetPickerState, validateApiKeyEnvName } from '@/lib/targets';
 
 // ---------------------------------------------------------------------------
 // Shared: schematic DAG renderer (works for fixture nodes AND live nodes)
@@ -230,8 +235,11 @@ const LIVE_DAG_EDGES = [
 
 function LiveMission() {
   const { status, events, start, abort, hudMode, connected } = useLive();
+  const { session } = useOperator();
   const [packSel, setPackSel] = useState<string[]>(ALL_PACKS);
   const [rounds, setRounds] = useState(3);
+  const [targetPick, setTargetPick] = useState<TargetPickerState>(DEFAULT_TARGET_PICKER);
+  const [startError, setStartError] = useState<string | null>(null);
   const [replayPos, setReplayPos] = useState<number | null>(null);
   const [paused, setPaused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -265,6 +273,21 @@ function LiveMission() {
   const togglePack = (p: string) =>
     setPackSel((s) => (s.includes(p) ? (s.length > 1 ? s.filter((x) => x !== p) : s) : [...s, p]));
 
+  const onStartCampaign = async () => {
+    setStartError(null);
+    const envErr = validateApiKeyEnvName(targetPick.apiKeyEnv);
+    if (envErr) {
+      setStartError(envErr);
+      return;
+    }
+    const out = await start(
+      packSel.length === ALL_PACKS.length ? null : packSel,
+      rounds,
+      buildTargetPayload(targetPick),
+    );
+    if (!out.ok && out.error) setStartError(out.error);
+  };
+
   return (
     <>
       <PageHeader
@@ -278,7 +301,20 @@ function LiveMission() {
         }
       />
 
-      <Panel title="Campaign Control" bodyClassName="p-4">
+      <Panel title="Campaign Control" bodyClassName="p-4 space-y-4">
+        <CampaignTargetPicker
+          value={targetPick}
+          onChange={setTargetPick}
+          operatorRole={session?.role}
+          running={running}
+          variant="ops"
+        />
+        <CampaignStartFeedback events={events} />
+        {startError && (
+          <p className="rounded border border-crit/50 bg-crit/10 px-3 py-2 font-mono text-[11px] text-crit" role="alert" data-testid="campaign-start-error">
+            {startError}
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 font-mono text-[10px] uppercase tracking-[0.14em] text-dim">packs</span>
@@ -324,7 +360,7 @@ function LiveMission() {
           ) : (
             <button
               type="button"
-              onClick={() => void start(packSel.length === ALL_PACKS.length ? null : packSel, rounds)}
+              onClick={() => void onStartCampaign()}
               className="flex items-center gap-2 rounded border border-acc/60 bg-acc/10 px-4 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-acc shadow-glow transition-colors hover:bg-acc/20"
             >
               <Icon name="play" className="h-3.5 w-3.5" /> start campaign
