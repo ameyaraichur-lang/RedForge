@@ -26,9 +26,10 @@ from ..operator.auth import (
     bootstrap_demo_session,
     create_session_response,
     resolve_principal,
+    role_at_least,
 )
 from ..operator.parser import parse_natural_language
-from ..operator.schemas import OperatorAction
+from ..operator.schemas import OperatorAction, OperatorRole
 from ..operator.confirm_store import ConfirmationStore
 from ..operator.secrets import assert_secure_operator_config
 from ..operator.service import OperatorService
@@ -381,7 +382,16 @@ def health() -> dict:
 
 
 @app.post("/api/campaign/start")
-async def start_campaign(body: StartBody) -> JSONResponse:
+async def start_campaign(body: StartBody, request: Request) -> JSONResponse:
+    # Choosing a target decides where RedForge sends hostile payloads, with a
+    # credential attached — a privileged act, so it requires an operator. A
+    # start against the deployer-configured default is left as it was.
+    if body.target is not None and body.target.is_explicit():
+        principal = resolve_principal(request)
+        if not role_at_least(principal.role, OperatorRole.OPERATOR):
+            raise HTTPException(
+                status_code=403,
+                detail="operator role required to choose a campaign target")
     result, code = await live.start(body.packs, body.rounds, body.target)
     return JSONResponse(result, status_code=code)
 

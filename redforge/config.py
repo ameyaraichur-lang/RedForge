@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     target_base_url: str = "http://127.0.0.1:8901/v1"
     target_api_key: str = ""
 
+    # Egress policy for CALLER-supplied target URLs (see targets/egress.py).
+    # Empty allowlist = callers may not choose a URL at all (fail closed); the
+    # deployer-set target_base_url above is unaffected. Entries are
+    # comma-separated host or host:port, with optional '*.' wildcard.
+    target_url_allowlist: str = ""
+    # Permit allowlisted hostnames that resolve into private/loopback ranges.
+    # Exact IP-literal allowlist entries are always honoured without this.
+    target_allow_private_egress: bool = False
+
     # Azure OpenAI GPT Astra — Responses API (api-version 2025-04-01-preview)
     astra_endpoint: str = "https://dev-agentic.openai.azure.com"
     astra_api_version: str = "2025-04-01-preview"

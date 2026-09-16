@@ -20,6 +20,7 @@ import os
 from redforge.config import effective_target_provider, settings
 from redforge.schemas.campaign import TargetRequest, TargetSpec
 
+from .egress import assert_credential_slot, assert_url_permitted
 from .protocol import TargetAdapter
 from .registry import (
     JUDGE_ONLY_PROVIDERS,
@@ -49,12 +50,25 @@ def resolve_endpoint(
         provider = "demo"
 
     # Precedence: explicit request, then the catalogue spec's own endpoint,
-    # then the environment default.
+    # then the environment default. Only the first is caller-controlled, and
+    # only that case is subject to the egress allowlist.
+    url_from_caller = bool(request.base_url)
     base_url = (request.base_url
                 or (spec.base_url if spec else "")
                 or settings.target_base_url)
 
+    # Checked before any credential is read, so the error cannot be used to
+    # probe which credential slots this server holds. The demo builder ignores
+    # base_url, so there is nothing to guard on that path.
+    if url_from_caller and provider != "demo":
+        assert_url_permitted(
+            base_url,
+            allowlist=settings.target_url_allowlist,
+            allow_private=settings.target_allow_private_egress,
+        )
+
     if request.api_key_env:
+        assert_credential_slot(request.api_key_env)
         api_key = os.environ.get(request.api_key_env, "")
         if not api_key:
             raise TargetResolutionError(

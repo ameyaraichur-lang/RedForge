@@ -111,25 +111,28 @@ def test_explicitly_requested_target_never_degrades_to_the_fixture(monkeypatch):
     """The important one: asking for a real target and getting the fixture
     would produce a scorecard for an asset that was never attacked."""
     monkeypatch.setattr(settings, "target_api_key", "")
+    monkeypatch.setattr(settings, "target_url_allowlist", "203.0.113.7")
     with pytest.raises(TargetResolutionError, match="needs a credential"):
         resolve_endpoint(TargetRequest(provider="openai-compatible",
-                                       base_url="https://target.invalid/v1"))
+                                       base_url="https://203.0.113.7/v1"))
 
 
 def test_api_key_is_read_from_the_named_env_var(monkeypatch):
-    monkeypatch.setenv("RF_TEST_TARGET_KEY", "secret-from-env")
+    monkeypatch.setenv("RF_TARGET_CRED_TEST", "secret-from-env")
+    monkeypatch.setattr(settings, "target_url_allowlist", "203.0.113.7")
     endpoint = resolve_endpoint(TargetRequest(provider="openai-compatible",
-                                              base_url="https://target.invalid/v1",
-                                              api_key_env="RF_TEST_TARGET_KEY"))
+                                              base_url="https://203.0.113.7/v1",
+                                              api_key_env="RF_TARGET_CRED_TEST"))
     assert endpoint.api_key == "secret-from-env"
 
 
 def test_missing_named_env_var_is_an_error_not_an_empty_key(monkeypatch):
-    monkeypatch.delenv("RF_ABSENT_TARGET_KEY", raising=False)
+    monkeypatch.delenv("RF_TARGET_CRED_ABSENT", raising=False)
+    monkeypatch.setattr(settings, "target_url_allowlist", "203.0.113.7")
     with pytest.raises(TargetResolutionError, match="unset or empty"):
         resolve_endpoint(TargetRequest(provider="openai-compatible",
-                                       base_url="https://target.invalid/v1",
-                                       api_key_env="RF_ABSENT_TARGET_KEY"))
+                                       base_url="https://203.0.113.7/v1",
+                                       api_key_env="RF_TARGET_CRED_ABSENT"))
 
 
 def test_target_request_carries_no_secret_field():
@@ -141,18 +144,21 @@ def test_target_request_carries_no_secret_field():
 
 def test_base_url_precedence_request_then_spec_then_env(monkeypatch):
     monkeypatch.setattr(settings, "target_api_key", "k")
-    monkeypatch.setattr(settings, "target_base_url", "http://from-env/v1")
+    monkeypatch.setattr(settings, "target_base_url", "http://203.0.113.3:9003/v1")
+    monkeypatch.setattr(settings, "target_url_allowlist", "203.0.113.1")
     spec = TargetSpec(id="T", name="t", target_class=demo_target().target_class,
-                      base_url="http://from-spec/v1")
+                      base_url="http://203.0.113.2:9002/v1")
 
-    req = TargetRequest(provider="openai-compatible", base_url="http://from-request/v1")
-    assert resolve_endpoint(req, spec).base_url == "http://from-request/v1"
+    # Only the caller-supplied URL is allowlist-checked; spec and env are not.
+    req = TargetRequest(provider="openai-compatible",
+                        base_url="http://203.0.113.1:9001/v1")
+    assert resolve_endpoint(req, spec).base_url == "http://203.0.113.1:9001/v1"
 
     req = TargetRequest(provider="openai-compatible")
-    assert resolve_endpoint(req, spec).base_url == "http://from-spec/v1"
+    assert resolve_endpoint(req, spec).base_url == "http://203.0.113.2:9002/v1"
 
     assert resolve_endpoint(TargetRequest(provider="openai-compatible")).base_url \
-        == "http://from-env/v1"
+        == "http://203.0.113.3:9003/v1"
 
 
 def test_requesting_astra_as_a_target_is_refused():
@@ -192,6 +198,16 @@ def api():
         yield base
 
 
+@pytest.fixture(scope="module")
+def operator(api):
+    """Choosing a target is operator-gated, so these calls need a session."""
+    client = httpx.Client(base_url=api, timeout=30)
+    r = client.post("/api/operator/bootstrap")
+    assert r.status_code == 200, r.text
+    yield client
+    client.close()
+
+
 def _wait_idle(api: str, timeout_s: float = 180) -> dict:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -212,23 +228,23 @@ def test_start_without_a_target_keeps_the_fixture(api):
     _wait_idle(api)
 
 
-def test_start_with_unknown_target_id_is_rejected(api):
-    r = httpx.post(f"{api}/api/campaign/start",
-                   json={"packs": ["MEM"], "rounds": 1,
-                         "target": {"target_id": "TGT-99"}}, timeout=30)
+def test_start_with_unknown_target_id_is_rejected(operator):
+    r = operator.post("/api/campaign/start",
+                      json={"packs": ["MEM"], "rounds": 1,
+                            "target": {"target_id": "TGT-99"}})
     assert r.status_code == 400
     assert "unknown target id" in r.json()["error"]
 
 
-def test_selected_target_scopes_the_packs_that_run(api):
+def test_selected_target_scopes_the_packs_that_run(api, operator):
     """TGT-04 allows PIN/AGE/CON, so an EXF request must not reach the target.
 
     Pack intersection existed in the runner but was unreachable while every
     campaign used TGT-DEMO, which allows all eight packs.
     """
-    r = httpx.post(f"{api}/api/campaign/start",
-                   json={"packs": ["PIN", "EXF"], "rounds": 1,
-                         "target": {"target_id": "TGT-04"}}, timeout=30)
+    r = operator.post("/api/campaign/start",
+                      json={"packs": ["PIN", "EXF"], "rounds": 1,
+                            "target": {"target_id": "TGT-04"}})
     assert r.status_code == 200, r.text
     assert r.json()["target_id"] == "TGT-04"
     st = _wait_idle(api)
@@ -237,15 +253,15 @@ def test_selected_target_scopes_the_packs_that_run(api):
         "EXF is not allowed on TGT-04 but attempts were made")
 
 
-def test_api_rejects_an_astra_target_request(api):
-    r = httpx.post(f"{api}/api/campaign/start",
-                   json={"packs": ["MEM"], "rounds": 1,
-                         "target": {"provider": "astra"}}, timeout=30)
+def test_api_rejects_an_astra_target_request(operator):
+    r = operator.post("/api/campaign/start",
+                      json={"packs": ["MEM"], "rounds": 1,
+                            "target": {"provider": "astra"}})
     assert r.status_code == 400
     assert "judge-only" in r.json()["error"]
 
 
-def test_bad_target_request_leaves_prior_results_intact(api):
+def test_bad_target_request_leaves_prior_results_intact(api, operator):
     """Resolution happens before state reset, so a typo cannot wipe a report."""
     r = httpx.post(f"{api}/api/campaign/start",
                    json={"packs": ["MEM"], "rounds": 1}, timeout=30)
@@ -253,9 +269,9 @@ def test_bad_target_request_leaves_prior_results_intact(api):
     good = _wait_idle(api)
     assert good["attempts"] > 0
 
-    r = httpx.post(f"{api}/api/campaign/start",
-                   json={"packs": ["MEM"], "rounds": 1,
-                         "target": {"target_id": "NOPE"}}, timeout=30)
+    r = operator.post("/api/campaign/start",
+                      json={"packs": ["MEM"], "rounds": 1,
+                            "target": {"target_id": "NOPE"}})
     assert r.status_code == 400
     after = httpx.get(f"{api}/api/campaign/status", timeout=10).json()
     assert after["campaign_id"] == good["campaign_id"]
