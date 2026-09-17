@@ -1,6 +1,7 @@
 """Central settings. Demo-mode-first (D3): no LLM keys required."""
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,7 +34,14 @@ class Settings(BaseSettings):
     # Operator-controlled authorisation-to-test records (see
     # targets/authorization.py). Unset = no non-demo target is authorised, so a
     # forgotten file fails closed rather than attacking an unapproved asset.
-    target_authorizations_path: str = ""
+    # RF_TARGET_AUTHORIZATIONS is the documented name and what the deny message
+    # tells operators to set; the _PATH form stays accepted so the env_prefix
+    # spelling keeps working.
+    target_authorizations_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("RF_TARGET_AUTHORIZATIONS",
+                                      "RF_TARGET_AUTHORIZATIONS_PATH"),
+    )
 
     # Azure OpenAI GPT Astra — Responses API (api-version 2025-04-01-preview)
     astra_endpoint: str = "https://dev-agentic.openai.azure.com"

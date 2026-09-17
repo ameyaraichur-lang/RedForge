@@ -54,6 +54,22 @@ def test_no_file_means_no_third_party_target_is_authorised():
     assert "RF_TARGET_AUTHORIZATIONS" in str(err.value)
 
 
+@pytest.mark.parametrize("env_name", ["RF_TARGET_AUTHORIZATIONS",
+                                      "RF_TARGET_AUTHORIZATIONS_PATH"])
+def test_the_env_var_we_tell_operators_to_set_actually_loads(env_name, tmp_path,
+                                                             monkeypatch):
+    """Every other test monkeypatches the setting directly, which cannot catch
+    the field name and the documented env var drifting apart. An operator who
+    follows the deny message must get a configured path, not silent default-deny."""
+    from redforge.config import Settings
+
+    path = _file(tmp_path, _record())
+    monkeypatch.delenv("RF_TARGET_AUTHORIZATIONS", raising=False)
+    monkeypatch.delenv("RF_TARGET_AUTHORIZATIONS_PATH", raising=False)
+    monkeypatch.setenv(env_name, path)
+    assert Settings(_env_file=None).target_authorizations_path == path
+
+
 def test_the_bundled_fixture_needs_no_approval():
     """It ships with the repo and is what the release gates attack."""
     assert assert_authorized("TGT-DEMO", "http://127.0.0.1:8901/v1",
