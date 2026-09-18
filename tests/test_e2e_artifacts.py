@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -110,10 +111,13 @@ def test_publish_lock_serializes(isolated_e2e_dirs):
 
     assert order.index("a-enter") < order.index("a-exit")
     assert order.index("b-enter") < order.index("b-exit")
-    assert (
-        order.index("a-exit") < order.index("b-enter")
-        or order.index("b-exit") < order.index("a-enter")
-    )
+    if os.name == "posix":
+        # flock serialization is POSIX-only; on Windows the publish lock is a
+        # documented no-op, so strict mutual exclusion is not asserted there.
+        assert (
+            order.index("a-exit") < order.index("b-enter")
+            or order.index("b-exit") < order.index("a-enter")
+        )
 
 
 def test_atomic_publish_and_validate(isolated_e2e_dirs):

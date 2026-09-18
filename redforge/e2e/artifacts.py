@@ -1,7 +1,6 @@
 """Staging, checksum manifests, and atomic publication for E2E release artifacts."""
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +12,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from redforge.version import __version__
+
+try:  # POSIX file locking; Windows falls back to a no-op guard below
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None  # type: ignore[assignment]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CANONICAL_DIR = REPO_ROOT / "output" / "e2e"
@@ -143,24 +147,30 @@ def build_manifest(
 
 @contextmanager
 def publish_lock(timeout_sec: float = 600) -> Iterator[None]:
-    """Exclusive process lock for canonical E2E publication."""
+    """Exclusive process lock for canonical E2E publication.
+
+    POSIX uses flock; on Windows the lock degrades to a no-op (single-user
+    dev boxes and CI runners publish one-at-a-time anyway).
+    """
     CANONICAL_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = LOCK_PATH.open("a+", encoding="utf-8")
     try:
-        deadline = time.monotonic() + timeout_sec
-        while True:
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"timed out waiting for publish lock ({LOCK_PATH})"
-                    ) from None
-                time.sleep(0.05)
+        if fcntl is not None:
+            deadline = time.monotonic() + timeout_sec
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            f"timed out waiting for publish lock ({LOCK_PATH})"
+                        ) from None
+                    time.sleep(0.05)
         yield
     finally:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         lock_file.close()
 
 

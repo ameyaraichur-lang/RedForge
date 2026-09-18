@@ -13,6 +13,8 @@ from typing import Callable
 
 import httpx
 
+HAS_PROCESS_GROUPS = hasattr(os, "killpg")  # POSIX only; Windows has no pgids
+
 
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -23,22 +25,28 @@ def free_port() -> int:
 def _kill_proc_group(proc: subprocess.Popen, grace_s: float = 3.0) -> None:
     if proc.poll() is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        proc.terminate()
-    except PermissionError:
+    if HAS_PROCESS_GROUPS:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            proc.terminate()
+        except PermissionError:
+            proc.terminate()
+    else:
         proc.terminate()
     deadline = time.time() + grace_s
     while time.time() < deadline:
         if proc.poll() is not None:
             return
         time.sleep(0.1)
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        proc.kill()
-    except PermissionError:
+    if HAS_PROCESS_GROUPS:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            proc.kill()
+        except PermissionError:
+            proc.kill()
+    else:
         proc.kill()
 
 
@@ -73,7 +81,7 @@ def spawn_process(
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **({"start_new_session": True} if HAS_PROCESS_GROUPS else {}),
     )
     return ManagedProcess(name=name, proc=proc)
 

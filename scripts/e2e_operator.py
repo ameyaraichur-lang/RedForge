@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+
+HAS_PROCESS_GROUPS = hasattr(os, "killpg")  # POSIX only; Windows has no pgids
 import socket
 import subprocess
 import sys
@@ -127,13 +129,13 @@ def main() -> int:
          "--host", "127.0.0.1", "--port", str(api_port), "--log-level", "warning"],
         cwd=ROOT,
         env=env,
-        start_new_session=True,
+        **({"start_new_session": True} if HAS_PROCESS_GROUPS else {}),
     )
     ui_proc = subprocess.Popen(
         ["npm", "run", "start", "--", "-p", str(ui_port)],
         cwd=CONSOLE,
         env={**env, "RF_API_BASE": api, "NEXT_PUBLIC_API_BASE": api, "HOSTNAME": "127.0.0.1"},
-        start_new_session=True,
+        **({"start_new_session": True} if HAS_PROCESS_GROUPS else {}),
     )
     errors: list[str] = []
     screenshots: list[str] = []

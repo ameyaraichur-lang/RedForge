@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 _SCRIPTS = ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
-from process_utils import _kill_proc_group  # noqa: E402
+from process_utils import _kill_proc_group, HAS_PROCESS_GROUPS  # noqa: E402
 
 _STDERR_TAIL_BYTES = 8192
 _LOG_FAIL_MARKERS = (
@@ -161,7 +161,7 @@ def _served(
             env=proc_env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            **({"start_new_session": True} if HAS_PROCESS_GROUPS else {}),
         )
         log_handle.close()
         try:

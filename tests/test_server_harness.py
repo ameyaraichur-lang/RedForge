@@ -39,7 +39,14 @@ def test_uvicorn_server_surfaces_bind_failure():
                 pass
         elapsed = time.time() - t0
         assert elapsed < 8, f"bind failure waited {elapsed:.1f}s (must stay well under 30s startup timeout)"
-        assert "address already in use" in str(exc.value).lower() or "Errno 48" in str(exc.value)
+        # POSIX: errno 48 / "address already in use"; Windows: errno 10048
+        err = str(exc.value).lower()
+        assert (
+            "address already in use" in err
+            or "errno 48" in err
+            or "10048" in err
+            or "only one usage of each socket address" in err
+        )
     finally:
         holder.close()
 
